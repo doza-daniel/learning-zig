@@ -65,10 +65,12 @@ fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
 
     var rr: reader = .{ .src = src };
 
-    const api_key = rr.readInt(i16);
-    const api_version = rr.readInt(i16);
-    const correlation_id = rr.readInt(i32);
-    const client_id = rr.readNullableString(alloc);
+    const api_key = try rr.readInt(i16);
+    const api_version = try rr.readInt(i16);
+    const correlation_id = try rr.readInt(i32);
+
+    const client_id = try rr.readNullableString(alloc);
+    defer maybeFree(alloc, client_id);
 
     std.debug.print("api_key: {d}; api_version:{d}; correlation_id: {d}; client_id: {s}\n", .{
         api_key,
@@ -77,80 +79,96 @@ fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
         client_id orelse "null",
     });
 
-    _ = try rr.readUvarint();
+    // skip tags
+    if (try rr.readUvarint() > 0) {
+        return error.UnexpectedTags;
+    }
 
-    const client_software_name = rr.readCompactString(alloc);
+    const client_software_name = try rr.readCompactString(alloc);
     defer alloc.free(client_software_name);
-    const client_software_version = rr.readCompactString(alloc);
+    const client_software_version = try rr.readCompactString(alloc);
     defer alloc.free(client_software_version);
+
+    // skip tags
+    if (try rr.readUvarint() > 0) {
+        return error.UnexpectedTags;
+    }
 
     std.debug.print("client_software_name: {s}; client_software_version: {s}\n", .{
         client_software_name,
         client_software_version,
     });
+}
 
-    if (client_id) |slice| {
-        alloc.free(slice);
+fn maybeFree(alloc: mem.Allocator, maybe: ?[]const u8) void {
+    if (maybe) |memory| {
+        alloc.free(memory);
     }
 }
 
 const reader = struct {
     src: []u8,
-    offset: usize = 0,
 
-    pub fn readInt(self: *reader, T: type) T {
-        const result = mem.readVarInt(T, self.src[self.offset .. self.offset + @sizeOf(T)], .big);
-        self.offset += @sizeOf(T);
+    pub fn readInt(self: *reader, T: type) !T {
+        if (self.src.len < @sizeOf(T)) {
+            return error.UnexpectedEOF;
+        }
+        const result = mem.readInt(T, self.src[0..@sizeOf(T)], .big);
+        self.src = self.src[@sizeOf(T)..];
         return result;
     }
 
     pub fn readUvarint(self: *reader) !u32 {
         var result: u32 = 0;
         var shift: u5 = 0;
-        for (self.src[self.offset..], 0..) |byte, i| {
+        for (self.src, 0..) |byte, i| {
             if (i == 4) {
                 if (byte > 0x3F) {
                     return error.Overflow;
                 }
             }
 
-            self.offset += 1;
-
             result |= @as(u32, byte & 0x7F) << shift;
             if (byte < 0x80) {
+                self.src = self.src[i + 1 ..];
                 return result;
             }
 
             shift += 7;
         }
-        return result;
+        return error.UnexpectedEOF;
     }
 
     pub fn readNullableString(
         self: *reader,
         alloc: mem.Allocator,
-    ) ?[]const u8 {
-        const len = self.readInt(i16);
-        if (len < 0) {
+    ) !?[]const u8 {
+        const num = try self.readInt(i16);
+        if (num < 0) {
             return null;
         }
 
-        const s = self.src[self.offset .. self.offset + @as(usize, @intCast(len))];
-        const x = alloc.dupe(u8, s) catch {
-            return null;
-        };
+        const len = @as(usize, @intCast(num));
 
-        self.offset += @as(usize, @intCast(len));
-        return x;
+        if (self.src.len < len) {
+            return error.UnexpectedEOF;
+        }
+
+        const str = try alloc.dupe(u8, self.src[0..len]);
+        self.src = self.src[len..];
+        return str;
     }
 
-    pub fn readCompactString(self: *reader, alloc: mem.Allocator) []const u8 {
-        const len = self.readUvarint() catch unreachable;
+    pub fn readCompactString(self: *reader, alloc: mem.Allocator) ![]const u8 {
+        const len = try self.readUvarint();
         if (len <= 1) {
             return "";
         }
-        const x = alloc.dupe(u8, self.src[self.offset .. self.offset + len - 1]) catch "";
-        self.offset += len - 1;
+        if (self.src.len < len - 1) {
+            return error.UnexpectedEOF;
+        }
+        const x = try alloc.dupe(u8, self.src[0 .. len - 1]);
+        self.src = self.src[len - 1 ..];
         return x;
     }
 };
@@ -173,9 +191,68 @@ test "readUvarint:overflow" {
     try std.testing.expect(false);
 }
 
+test "readUvarint:unexpected_eof" {
+    var in = [_]u8{0xff};
+    var x: reader = .{ .src = &in };
+    _ = x.readUvarint() catch |err| {
+        try std.testing.expect(err == error.UnexpectedEOF);
+        return;
+    };
+    try std.testing.expect(false);
+}
+
 test "readUvarint:max_u32" {
     var in = [_]u8{ 0xff, 0xff, 0xff, 0xff, 0x3f };
     var x: reader = .{ .src = &in };
     const got = try x.readUvarint();
     try std.testing.expect(got == std.math.maxInt(u32));
+}
+
+test "readNullableString:null" {
+    var in = [_]u8{ 0xff, 0xff };
+    var x: reader = .{ .src = &in };
+    const got = x.readNullableString(std.testing.allocator) catch {
+        try std.testing.expect(false);
+        return;
+    };
+    try std.testing.expect(got == null);
+}
+
+test "readNullableString:empty" {
+    var in = [_]u8{ 0x00, 0x00 };
+    var x: reader = .{ .src = &in };
+    const got = x.readNullableString(std.testing.allocator) catch {
+        try std.testing.expect(false);
+        return;
+    };
+    if (got) |str| {
+        try std.testing.expect(str.len == 0);
+        return;
+    }
+    try std.testing.expect(false);
+}
+
+test "readNullableString:hello" {
+    var in = [_]u8{ 0x00, 0x05, 'h', 'e', 'l', 'l', 'o' };
+    var x: reader = .{ .src = &in };
+    const got = x.readNullableString(std.testing.allocator) catch {
+        try std.testing.expect(false);
+        return;
+    };
+    if (got) |str| {
+        try std.testing.expect(mem.eql(u8, str, "hello"));
+        std.testing.allocator.free(str);
+        return;
+    }
+    try std.testing.expect(false);
+}
+
+test "readNullableString:alloc_fail" {
+    var in = [_]u8{ 0x00, 0x05, 'h', 'e', 'l', 'l', 'o' };
+    var x: reader = .{ .src = &in };
+    _ = x.readNullableString(std.testing.failing_allocator) catch |err| {
+        try std.testing.expect(err == error.OutOfMemory);
+        return;
+    };
+    try std.testing.expect(false);
 }
