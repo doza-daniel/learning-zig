@@ -1,6 +1,8 @@
 const std = @import("std");
 
 const Reader = @import("Reader.zig");
+const RequestHeader = @import("RequestHeader.zig");
+const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
 
 const net = std.Io.net;
 const mem = std.mem;
@@ -65,45 +67,18 @@ fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
 
     try stream_reader.readSliceAll(src);
 
-    var rr: Reader = .{ .src = src };
+    var reader: Reader = .{ .src = src };
 
-    const api_key = try rr.readInt(i16);
-    const api_version = try rr.readInt(i16);
-    const correlation_id = try rr.readInt(i32);
+    var header = RequestHeader{};
+    try header.read(&reader, alloc);
+    defer header.deinit(alloc);
 
-    const client_id = try rr.readNullableString(alloc);
-    defer maybeFree(alloc, client_id);
+    var apiVersionsReq = ApiVersionsRequest{};
+    try apiVersionsReq.read(&reader, alloc);
+    defer apiVersionsReq.deinit(alloc);
 
-    std.debug.print("api_key: {d}; api_version:{d}; correlation_id: {d}; client_id: {s}\n", .{
-        api_key,
-        api_version,
-        correlation_id,
-        client_id orelse "null",
+    std.debug.print("{f}\n{f}\n", .{
+        std.json.fmt(header, .{}),
+        std.json.fmt(apiVersionsReq, .{}),
     });
-
-    // skip tags
-    if (try rr.readUvarint() > 0) {
-        return error.UnexpectedTags;
-    }
-
-    const client_software_name = try rr.readCompactString(alloc);
-    defer alloc.free(client_software_name);
-    const client_software_version = try rr.readCompactString(alloc);
-    defer alloc.free(client_software_version);
-
-    // skip tags
-    if (try rr.readUvarint() > 0) {
-        return error.UnexpectedTags;
-    }
-
-    std.debug.print("client_software_name: {s}; client_software_version: {s}\n", .{
-        client_software_name,
-        client_software_version,
-    });
-}
-
-fn maybeFree(alloc: mem.Allocator, maybe: ?[]const u8) void {
-    if (maybe) |memory| {
-        alloc.free(memory);
-    }
 }
