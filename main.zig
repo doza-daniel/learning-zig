@@ -18,38 +18,10 @@ pub fn main(init: std.process.Init) !void {
         const stream = try netSrv.accept(init.io);
         defer stream.close(init.io);
         if (true) {
-            return kafka(init.gpa, init.io, stream);
+            try kafka(init.gpa, init.io, stream);
+        } else {
+            try http_server(init.gpa, init.io, stream);
         }
-
-        var read_buffer: [4098]u8 = undefined;
-        var write_buffer: [4098]u8 = undefined;
-
-        var r = stream.reader(init.io, &read_buffer);
-        var w = stream.writer(init.io, &write_buffer);
-
-        var conn = http.Server.init(&r.interface, &w.interface);
-        var req = try conn.receiveHead();
-
-        if (req.head.content_length orelse 0 == 0) {
-            try req.respond("missing body", .{ .status = .bad_request });
-            continue;
-        }
-
-        var br = http.Reader.bodyReader(&conn.reader, &read_buffer, req.head.transfer_encoding, req.head.content_length);
-
-        br.readSliceAll(&read_buffer) catch |err| {
-            switch (err) {
-                error.ReadFailed => return err,
-                error.EndOfStream => {},
-            }
-        };
-
-        const body = read_buffer[0..req.head.content_length.?];
-
-        const response = try std.fmt.allocPrint(init.gpa, "hello {s}\n", .{body});
-        defer init.gpa.free(response);
-
-        try req.respond(response, .{ .status = .ok });
     }
 }
 
@@ -81,4 +53,36 @@ fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
         std.json.fmt(header, .{}),
         std.json.fmt(apiVersionsReq, .{}),
     });
+}
+
+fn http_server(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
+    var read_buffer: [4098]u8 = undefined;
+    var write_buffer: [4098]u8 = undefined;
+
+    var r = stream.reader(io, &read_buffer);
+    var w = stream.writer(io, &write_buffer);
+
+    var conn = http.Server.init(&r.interface, &w.interface);
+    var req = try conn.receiveHead();
+
+    if (req.head.content_length orelse 0 == 0) {
+        try req.respond("missing body", .{ .status = .bad_request });
+        return;
+    }
+
+    var br = http.Reader.bodyReader(&conn.reader, &read_buffer, req.head.transfer_encoding, req.head.content_length);
+
+    br.readSliceAll(&read_buffer) catch |err| {
+        switch (err) {
+            error.ReadFailed => return err,
+            error.EndOfStream => {},
+        }
+    };
+
+    const body = read_buffer[0..req.head.content_length.?];
+
+    const response = try std.fmt.allocPrint(alloc, "hello {s}\n", .{body});
+    defer alloc.free(response);
+
+    try req.respond(response, .{ .status = .ok });
 }
