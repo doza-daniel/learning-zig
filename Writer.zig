@@ -14,13 +14,13 @@ pub fn writeInt(self: *Writer, alloc: mem.Allocator, comptime T: type, val: T) !
 
 pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
     var tmp = val;
-    var buffer = [_]u8{0} ** 5;
+    var buffer = [_]u8{0} ** (@sizeOf(u32) + 1);
     var i: u8 = 0;
     while (i < buffer.len) : (i += 1) {
         if (i > 0) {
             buffer[i - 1] |= 0x80; // set continuation bit
         }
-        buffer[i] = @as(u8, @truncate(tmp)) & 0x7F;
+        buffer[i] = @as(u8, @truncate(tmp)) & 0x7F; // take first 7 bits
         tmp >>= 7;
         if (tmp == 0) {
             break;
@@ -29,9 +29,27 @@ pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
     try self.buf.appendSlice(alloc, buffer[0 .. i + 1]);
 }
 
-pub fn writeString() !void {}
+pub fn writeBool(self: *Writer, alloc: mem.Allocator, val: bool) !void {
+    if (val) {
+        try self.buf.append(alloc, 1);
+    } else {
+        try self.buf.append(alloc, 0);
+    }
+}
 
-pub fn writeCompactString() !void {}
+pub fn writeNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
+    if (val) |str| {
+        try self.writeInt(alloc, i16, @intCast(str.len));
+        try self.buf.appendSlice(alloc, str);
+    } else {
+        try self.writeInt(alloc, i16, -1);
+    }
+}
+
+pub fn writeCompactString(self: *Writer, alloc: mem.Allocator, val: []const u8) !void {
+    try self.writeUvarint(alloc, @intCast(val.len));
+    try self.buf.appendSlice(alloc, val);
+}
 
 pub fn deinit(self: *Writer, alloc: mem.Allocator) void {
     self.buf.deinit(alloc);
@@ -60,4 +78,53 @@ test "writeUvarint" {
     const got = try x.readUvarint();
     try std.testing.expectEqual(got, expect);
     w.deinit(std.testing.allocator);
+}
+
+test "writeNullableString:null" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeNullableString(std.testing.allocator, null);
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0xFF, 0xFF }));
+}
+
+test "writeNullableString:empty" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeNullableString(std.testing.allocator, "");
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x00, 0x00 }));
+}
+
+test "writeNullableString:happy" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeNullableString(std.testing.allocator, "happy");
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x00, 0x05, 'h', 'a', 'p', 'p', 'y' }));
+}
+
+test "writeCompactString:empty" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeCompactString(std.testing.allocator, "");
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{0x00}));
+}
+
+test "writeCompactString:happy" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeCompactString(std.testing.allocator, "happy");
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x05, 'h', 'a', 'p', 'p', 'y' }));
+}
+
+test "writeBool:true" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeBool(std.testing.allocator, true);
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{0x01}));
+}
+
+test "writeBool:false" {
+    var w: Writer = .{};
+    defer w.deinit(std.testing.allocator);
+    try w.writeBool(std.testing.allocator, false);
+    try std.testing.expect(mem.eql(u8, w.buf.items, &.{0x00}));
 }
