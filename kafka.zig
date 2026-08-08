@@ -16,65 +16,99 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     var buffer: [2096]u8 = undefined;
 
     var p = stream.reader(io, &buffer);
-    var stream_reader = &p.interface;
+    const stream_reader = &p.interface;
 
     while (true) {
-        var size_buffer: [4]u8 = undefined;
-        try stream_reader.readSliceEndian(u8, &size_buffer, .big);
-        const size = mem.readInt(i32, &size_buffer, .big);
+        const requestBody = try readRawRequest(alloc, stream_reader);
+        defer alloc.free(requestBody);
 
-        const src = try alloc.alloc(u8, @intCast(size));
-        defer alloc.free(src);
+        var reader: Reader = .{ .src = requestBody };
 
-        try stream_reader.readSliceAll(src);
+        var reqHeader = RequestHeader{};
+        try reqHeader.read(&reader, alloc);
+        defer reqHeader.deinit(alloc);
 
-        var reader: Reader = .{ .src = src };
-
-        var header = RequestHeader{};
-        try header.read(&reader, alloc);
-        defer header.deinit(alloc);
-
-        var apiVersionsReq = ApiVersionsRequest{};
-        try apiVersionsReq.read(&reader, alloc);
-        defer apiVersionsReq.deinit(alloc);
-
-        std.debug.print("{f}\n{f}\n", .{
-            std.json.fmt(header, .{}),
-            std.json.fmt(apiVersionsReq, .{}),
-        });
-
-        var w: Writer = .{};
-        defer w.deinit(alloc);
-
-        const respHeader: ResponseHeader = .{
-            .correlation_id = header.correlation_id,
+        handleRequest(alloc, io, reqHeader, stream, &reader) catch |err| {
+            std.debug.print("error while handing conn: {any}\n", .{err});
+            return;
         };
-        try respHeader.write(alloc, &w);
-
-        const api_keys = [_]ApiVersionsResponse.ApiVersion{
-            .{
-                .api_key = 18,
-                .min_version = 4,
-                .max_version = 4,
-            },
-            .{
-                .api_key = 3,
-                .min_version = 4,
-                .max_version = 4,
-            },
-        };
-        const apiVersionsResp: ApiVersionsResponse = .{ .error_code = 0, .api_keys = &api_keys };
-        try apiVersionsResp.write(alloc, &w);
-
-        var sw = stream.writer(io, &buffer);
-        var stream_writer = &sw.interface;
-
-        try stream_writer.writeInt(i32, @intCast(w.buf.items.len), .big);
-        const written = try stream_writer.write(w.buf.items);
-
-        if (written != w.buf.items.len) {
-            return error.NotEnoughWritten;
-        }
-        try stream_writer.flush();
     }
+}
+
+fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, stream: net.Stream, reader: *Reader) !void {
+    std.debug.print("{f}\n", .{std.json.fmt(req_header, .{})});
+    switch (req_header.request_api_key) {
+        18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
+        3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id),
+        else => return error.UnknownOp,
+    }
+}
+
+fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32) !void {
+    var apiVersionsReq = ApiVersionsRequest{};
+    try apiVersionsReq.read(reader, alloc);
+    defer apiVersionsReq.deinit(alloc);
+
+    std.debug.print("{f}\n", .{std.json.fmt(apiVersionsReq, .{})});
+
+    var w: Writer = .{};
+    defer w.deinit(alloc);
+
+    const respHeader: ResponseHeader = .{
+        .correlation_id = correlation_id,
+    };
+    try respHeader.write(alloc, &w);
+
+    const api_keys = [_]ApiVersionsResponse.ApiVersion{
+        .{
+            .api_key = 18,
+            .min_version = 4,
+            .max_version = 4,
+        },
+        .{
+            .api_key = 3,
+            .min_version = 4,
+            .max_version = 4,
+        },
+    };
+    const apiVersionsResp: ApiVersionsResponse = .{ .error_code = 0, .api_keys = &api_keys };
+    try apiVersionsResp.write(alloc, &w);
+
+    try writeRawResponse(io, stream, w.buf.items);
+}
+
+fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32) !void {
+    _ = alloc;
+    _ = io;
+    _ = stream;
+    _ = reader;
+    _ = correlation_id;
+    return error.MetadataNotSupported;
+}
+
+fn readRawRequest(alloc: mem.Allocator, stream_reader: *std.Io.Reader) ![]u8 {
+    var size_buffer: [4]u8 = undefined;
+    try stream_reader.readSliceEndian(u8, &size_buffer, .big);
+    const size = mem.readInt(i32, &size_buffer, .big);
+
+    const src = try alloc.alloc(u8, @intCast(size));
+
+    try stream_reader.readSliceAll(src);
+
+    return src;
+}
+
+fn writeRawResponse(io: std.Io, stream: net.Stream, rawResponse: []u8) !void {
+    var buffer: [2096]u8 = undefined;
+
+    var sw = stream.writer(io, &buffer);
+    var stream_writer = &sw.interface;
+
+    try stream_writer.writeInt(i32, @intCast(rawResponse.len), .big);
+    const written = try stream_writer.write(rawResponse);
+
+    if (written != rawResponse.len) {
+        return error.NotEnoughWritten;
+    }
+    try stream_writer.flush();
 }
