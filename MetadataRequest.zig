@@ -35,15 +35,12 @@ pub fn read(self: *MetadataRequest, reader: *Reader, alloc: mem.Allocator) !void
     }
     if (self.version >= 4) {
         self.allow_auto_topic_creation = try reader.readBool();
-        try self.parseUnusedTags(reader);
     }
     if (self.version >= 8 and self.version <= 10) {
         self.include_cluster_authorized_operations = try reader.readBool();
-        try self.parseUnusedTags(reader);
     }
     if (self.version >= 8) {
         self.include_topic_authorized_operations = try reader.readBool();
-        try self.parseUnusedTags(reader);
     }
 }
 
