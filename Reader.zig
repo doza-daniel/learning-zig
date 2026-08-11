@@ -69,6 +69,20 @@ pub fn readCompactString(self: *Reader, alloc: mem.Allocator) ![]const u8 {
     return x;
 }
 
+pub fn readUuid(self: *Reader) ![16]u8 {
+    var result = [_]u8{0} ** 16;
+    if (self.src.len < @sizeOf(@TypeOf(result))) {
+        return error.UnexpectedEOF;
+    }
+    @memcpy(&result, self.src[0..16]);
+    self.src = self.src[16..];
+    return result;
+}
+
+pub fn readBool(self: *Reader) !bool {
+    return try self.readInt(u8) > 0;
+}
+
 test "readUvarint:happy" {
     var in = [_]u8{ 0x96, 0x01 };
     const expect: u32 = 150;
@@ -151,4 +165,11 @@ test "readNullableString:alloc_fail" {
         return;
     };
     try std.testing.expect(false);
+}
+
+test "readUuid" {
+    var in = [_]u8{ 0x45, 0x0c, 0xfe, 0xbc, 0x51, 0xe1, 0x4c, 0x7b, 0x7a, 0x25, 0xe4, 0x33, 0x0e, 0xc5, 0x5e, 0x5d };
+    var x: Reader = .{ .src = &in };
+    const got = try x.readUuid();
+    try std.testing.expect(mem.eql(u8, &got, &in));
 }

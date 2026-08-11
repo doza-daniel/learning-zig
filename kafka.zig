@@ -9,6 +9,7 @@ const RequestHeader = @import("RequestHeader.zig");
 const ResponseHeader = @import("ResponseHeader.zig");
 const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
 const ApiVersionsResponse = @import("ApiVersionsResponse.zig");
+const MetadataRequest = @import("MetadataRequest.zig");
 
 pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -22,6 +23,7 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
         const requestBody = try readRawRequest(alloc, stream_reader);
         defer alloc.free(requestBody);
 
+        std.debug.print("requestBody: {x}\n", .{requestBody});
         var reader: Reader = .{ .src = requestBody };
 
         var reqHeader = RequestHeader{};
@@ -39,7 +41,7 @@ fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, st
     std.debug.print("{f}\n", .{std.json.fmt(req_header, .{})});
     switch (req_header.request_api_key) {
         18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
-        3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id),
+        3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         else => return error.UnknownOp,
     }
 }
@@ -62,13 +64,13 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
     const api_keys = [_]ApiVersionsResponse.ApiVersion{
         .{
             .api_key = 18,
-            .min_version = 4,
-            .max_version = 4,
+            .min_version = 5,
+            .max_version = 5,
         },
         .{
             .api_key = 3,
-            .min_version = 4,
-            .max_version = 4,
+            .min_version = 13,
+            .max_version = 13,
         },
     };
     const apiVersionsResp: ApiVersionsResponse = .{ .error_code = 0, .api_keys = &api_keys };
@@ -77,12 +79,16 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
     try writeRawResponse(io, stream, w.buf.items);
 }
 
-fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32) !void {
-    _ = alloc;
+fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
     _ = io;
     _ = stream;
-    _ = reader;
     _ = correlation_id;
+    var metadataReq = MetadataRequest{ .version = version };
+    try metadataReq.read(reader, alloc);
+    defer metadataReq.deinit(alloc);
+
+    std.debug.print("{f}\n", .{std.json.fmt(metadataReq, .{})});
+
     return error.MetadataNotSupported;
 }
 
