@@ -47,8 +47,12 @@ pub fn writeNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8
 }
 
 pub fn writeCompactString(self: *Writer, alloc: mem.Allocator, val: []const u8) !void {
-    try self.writeUvarint(alloc, @intCast(val.len));
+    try self.writeUvarint(alloc, @intCast(val.len + 1));
     try self.buf.appendSlice(alloc, val);
+}
+
+pub fn writeUuid(self: *Writer, alloc: mem.Allocator, val: [16]u8) !void {
+    try self.buf.appendSlice(alloc, &val);
 }
 
 pub fn deinit(self: *Writer, alloc: mem.Allocator) void {

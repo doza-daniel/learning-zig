@@ -10,6 +10,7 @@ const ResponseHeader = @import("ResponseHeader.zig");
 const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
 const ApiVersionsResponse = @import("ApiVersionsResponse.zig");
 const MetadataRequest = @import("MetadataRequest.zig");
+const MetadataResponse = @import("MetadataResponse.zig");
 
 pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -20,7 +21,12 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     const stream_reader = &p.interface;
 
     while (true) {
-        const requestBody = try readRawRequest(alloc, stream_reader);
+        const requestBody = readRawRequest(alloc, stream_reader) catch |err| {
+            if (err == error.EndOfStream) {
+                return;
+            }
+            return err;
+        };
         defer alloc.free(requestBody);
 
         std.debug.print("requestBody: {x}\n", .{requestBody});
@@ -80,16 +86,73 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
 }
 
 fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    _ = io;
-    _ = stream;
-    _ = correlation_id;
     var metadataReq = MetadataRequest{ .version = version };
     try metadataReq.read(reader, alloc);
     defer metadataReq.deinit(alloc);
 
     std.debug.print("{f}\n", .{std.json.fmt(metadataReq, .{})});
 
-    return error.MetadataNotSupported;
+    const partitions = [_]MetadataResponse.MetadataResponsePartition{
+        .{
+            .error_code = 0,
+            .partition_index = 0,
+            .leader_id = 1,
+            .leader_epoch = 320,
+            .replica_nodes = &.{},
+            .isr_nodes = &.{},
+            .offline_replicas = &.{},
+        },
+        .{
+            .error_code = 0,
+            .partition_index = 1,
+            .leader_id = 2,
+            .leader_epoch = 320,
+            .replica_nodes = &.{},
+            .isr_nodes = &.{},
+            .offline_replicas = &.{},
+        },
+    };
+
+    const topics = [_]MetadataResponse.MetadataResponseTopic{
+        .{
+            .error_code = 0,
+            .name = "my-topic",
+            .topic_id = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 },
+            .is_internal = false,
+            .partitions = &partitions,
+        },
+    };
+
+    const brokers = [_]MetadataResponse.MetadataResponseBroker{
+        .{
+            .host = "localhost",
+            .port = 8080,
+            .node_id = 1,
+            .rack = "asdf",
+        },
+    };
+
+    const metadataResp: MetadataResponse = .{
+        .throttle_time_ms = 100,
+        .brokers = &brokers,
+        .cluster_id = "my-cluster",
+        .controller_id = 1,
+        .topics = &topics,
+        .error_code = 0,
+    };
+
+    var w: Writer = .{};
+    defer w.deinit(alloc);
+
+    const respHeader: ResponseHeader = .{
+        .correlation_id = correlation_id,
+    };
+    try respHeader.write(alloc, &w);
+    try w.writeUvarint(alloc, 0);
+
+    try metadataResp.write(alloc, &w);
+
+    try writeRawResponse(io, stream, w.buf.items);
 }
 
 fn readRawRequest(alloc: mem.Allocator, stream_reader: *std.Io.Reader) ![]u8 {
