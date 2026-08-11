@@ -16,8 +16,16 @@ pub fn read(self: *RequestHeader, reader: *Reader, alloc: mem.Allocator) !void {
     self.request_api_version = try reader.readInt(i16);
     self.correlation_id = try reader.readInt(i32);
     self.client_id = try reader.readNullableString(alloc);
-    if (try reader.readUvarint() > 0) {
+    if (isFlexible(self.request_api_key, self.request_api_version) and try reader.readUvarint() > 0) {
         return error.UnexpectedTags;
+    }
+}
+
+fn isFlexible(api_key: i16, api_version: i16) bool {
+    switch (api_key) {
+        3 => return api_version >= 9,
+        18 => return api_version >= 3,
+        else => return false,
     }
 }
 
