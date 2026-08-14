@@ -79,6 +79,7 @@ pub fn deinit(self: MetadataRequest, alloc: mem.Allocator) void {
     for (self.topics) |topic| {
         topic.deinit(alloc);
     }
+    alloc.free(self.topics);
 }
 
 pub fn isFlexible(self: MetadataRequest) bool {
