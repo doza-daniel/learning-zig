@@ -11,6 +11,8 @@ const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
 const ApiVersionsResponse = @import("ApiVersionsResponse.zig");
 const MetadataRequest = @import("MetadataRequest.zig");
 const MetadataResponse = @import("MetadataResponse.zig");
+const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
+const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
 
 pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -48,6 +50,7 @@ fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, st
     switch (req_header.request_api_key) {
         18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
         3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
+        22 => try handleInitProducerIdRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         else => return error.UnknownOp,
     }
 }
@@ -77,6 +80,11 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
             .api_key = 3,
             .min_version = 13,
             .max_version = 13,
+        },
+        .{
+            .api_key = 22,
+            .min_version = 5,
+            .max_version = 5,
         },
     };
     const apiVersionsResp: ApiVersionsResponse = .{ .error_code = 0, .api_keys = &api_keys };
@@ -133,7 +141,7 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
     };
 
     const metadataResp: MetadataResponse = .{
-        .throttle_time_ms = 100,
+        .throttle_time_ms = 0,
         .brokers = &brokers,
         .cluster_id = "my-cluster",
         .controller_id = 1,
@@ -151,6 +159,37 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
     try w.writeUvarint(alloc, 0);
 
     try metadataResp.write(alloc, &w);
+
+    try writeRawResponse(io, stream, w.buf.items);
+}
+
+fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
+    var req: InitProducerIdRequest = .{
+        .version = version,
+        .transactional_id = null,
+        .transaction_timeout_ms = 0,
+    };
+    try req.read(reader, alloc);
+
+    std.debug.print("{f}\n", .{std.json.fmt(req, .{})});
+
+    var resp: InitProducerIdResponse = .{
+        .throttle_time_ms = 0,
+        .error_code = 0,
+        .producer_id = 420,
+        .producer_epoch = 0,
+    };
+
+    var w: Writer = .{};
+    defer w.deinit(alloc);
+
+    const respHeader: ResponseHeader = .{
+        .correlation_id = correlation_id,
+    };
+    try respHeader.write(alloc, &w);
+    try w.writeUvarint(alloc, 0);
+
+    try resp.write(alloc, &w);
 
     try writeRawResponse(io, stream, w.buf.items);
 }
