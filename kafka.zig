@@ -24,10 +24,8 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
 
     while (true) {
         const requestBody = readRawRequest(alloc, stream_reader) catch |err| {
-            if (err == error.EndOfStream) {
-                return;
-            }
-            return err;
+            std.debug.print("error happened: {any}", .{err});
+            return;
         };
         defer alloc.free(requestBody);
 
@@ -113,7 +111,7 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
         .{
             .error_code = 0,
             .partition_index = 1,
-            .leader_id = 2,
+            .leader_id = 1,
             .leader_epoch = 320,
             .replica_nodes = &.{},
             .isr_nodes = &.{},
