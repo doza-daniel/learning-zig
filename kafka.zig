@@ -13,6 +13,7 @@ const MetadataRequest = @import("MetadataRequest.zig");
 const MetadataResponse = @import("MetadataResponse.zig");
 const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
 const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
+const ProduceRequest = @import("ProduceRequest.zig");
 
 pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -24,12 +25,12 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
 
     while (true) {
         const requestBody = readRawRequest(alloc, stream_reader) catch |err| {
-            std.debug.print("error happened: {any}", .{err});
+            std.debug.print("error happened: {any}\n\n", .{err});
             return;
         };
         defer alloc.free(requestBody);
 
-        std.debug.print("requestBody: {x}\n", .{requestBody});
+        std.debug.print("requestBody: {x}\n\n", .{requestBody});
         var reader: Reader = .{ .src = requestBody };
 
         var reqHeader = RequestHeader{};
@@ -37,17 +38,18 @@ pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
         defer reqHeader.deinit(alloc);
 
         handleRequest(alloc, io, reqHeader, stream, &reader) catch |err| {
-            std.debug.print("error while handing conn: {any}\n", .{err});
+            std.debug.print("error while handing conn: {any}\n\n", .{err});
             return;
         };
     }
 }
 
 fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, stream: net.Stream, reader: *Reader) !void {
-    std.debug.print("{f}\n", .{std.json.fmt(req_header, .{})});
+    std.debug.print("{f}\n\n", .{std.json.fmt(req_header, .{})});
     switch (req_header.request_api_key) {
-        18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
+        0 => try handleProduceRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
+        18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
         22 => try handleInitProducerIdRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         else => return error.UnknownOp,
     }
@@ -58,7 +60,7 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
     try apiVersionsReq.read(reader, alloc);
     defer apiVersionsReq.deinit(alloc);
 
-    std.debug.print("{f}\n", .{std.json.fmt(apiVersionsReq, .{})});
+    std.debug.print("{f}\n\n", .{std.json.fmt(apiVersionsReq, .{})});
 
     var w: Writer = .{};
     defer w.deinit(alloc);
@@ -69,6 +71,11 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
     try respHeader.write(alloc, &w);
 
     const api_keys = [_]ApiVersionsResponse.ApiVersion{
+        .{
+            .api_key = 0,
+            .min_version = 13,
+            .max_version = 13,
+        },
         .{
             .api_key = 18,
             .min_version = 5,
@@ -96,7 +103,7 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
     try metadataReq.read(reader, alloc);
     defer metadataReq.deinit(alloc);
 
-    std.debug.print("{f}\n", .{std.json.fmt(metadataReq, .{})});
+    std.debug.print("{f}\n\n", .{std.json.fmt(metadataReq, .{})});
 
     const partitions = [_]MetadataResponse.MetadataResponsePartition{
         .{
@@ -169,7 +176,7 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
     };
     try req.read(reader, alloc);
 
-    std.debug.print("{f}\n", .{std.json.fmt(req, .{})});
+    std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
 
     var resp: InitProducerIdResponse = .{
         .throttle_time_ms = 0,
@@ -190,6 +197,23 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
     try resp.write(alloc, &w);
 
     try writeRawResponse(io, stream, w.buf.items);
+}
+
+fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
+    _ = io;
+    _ = stream;
+    _ = correlation_id;
+    var req: ProduceRequest = .{
+        .version = version,
+        .acks = undefined,
+        .timeout_ms = undefined,
+        .topic_data = undefined,
+    };
+    try req.read(reader, alloc);
+
+    std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
+
+    return error.ProduceRequestUnsupported;
 }
 
 fn readRawRequest(alloc: mem.Allocator, stream_reader: *std.Io.Reader) ![]u8 {

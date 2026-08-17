@@ -23,6 +23,7 @@ pub fn read(self: *RequestHeader, reader: *Reader, alloc: mem.Allocator) !void {
 
 fn isFlexible(api_key: i16, api_version: i16) bool {
     switch (api_key) {
+        0 => return api_version >= 9,
         3 => return api_version >= 9,
         18 => return api_version >= 3,
         else => return false,
