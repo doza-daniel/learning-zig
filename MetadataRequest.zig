@@ -28,10 +28,10 @@ pub fn read(self: *MetadataRequest, reader: *Reader, alloc: mem.Allocator) !void
     if (self.isFlexible()) {
         num_topics = try reader.readUvarint();
     } else {
-        num_topics = try reader.readInt(u32);
+        num_topics = try reader.readInt(u32) + 1;
     }
     if (num_topics > 1) {
-        try self.readTopics(alloc, reader, num_topics - 1);
+         try self.readTopics(alloc, reader, num_topics - 1);
     }
     if (self.version >= 4) {
         self.allow_auto_topic_creation = try reader.readBool();

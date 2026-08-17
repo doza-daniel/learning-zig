@@ -83,6 +83,13 @@ pub fn readBool(self: *Reader) !bool {
     return try self.readInt(u8) > 0;
 }
 
+pub fn readCompactBytes(self: *Reader, alloc: mem.Allocator) ![]u8 {
+    const len = try self.readUvarint();
+    const ret = try alloc.dupe(u8, self.src[0..len]);
+    self.src = self.src[len..];
+    return ret;
+}
+
 test "readUvarint:happy" {
     var in = [_]u8{ 0x96, 0x01 };
     const expect: u32 = 150;
