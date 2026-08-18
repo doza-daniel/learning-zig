@@ -14,6 +14,7 @@ const MetadataResponse = @import("MetadataResponse.zig");
 const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
 const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
 const ProduceRequest = @import("ProduceRequest.zig");
+const ProduceResponse = @import("ProduceResponse.zig");
 
 pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -200,9 +201,6 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
 }
 
 fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    _ = io;
-    _ = stream;
-    _ = correlation_id;
     var req: ProduceRequest = .{
         .version = version,
         .acks = undefined,
@@ -213,7 +211,56 @@ fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, re
 
     std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
 
-    return error.ProduceRequestUnsupported;
+    var partition_responses = [_]ProduceResponse.PartitionProduceResponse{
+        .{
+            .index = 0,
+            .error_code = 0,
+            .base_offset = 0,
+            .log_append_time_ms = 12345,
+            .log_start_offset = 0,
+            .current_leader = .{ .leader_id = 1, .leader_epoch = 320 },
+        },
+        .{
+            .index = 1,
+            .error_code = 0,
+            .base_offset = 0,
+            .log_append_time_ms = 54321,
+            .log_start_offset = 5,
+            .current_leader = .{ .leader_id = 1, .leader_epoch = 320 },
+        },
+    };
+    var responses = [_]ProduceResponse.TopicProduceResponse{
+        .{
+            .id = .{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 },
+            .partition_responses = &partition_responses,
+        },
+    };
+    var node_endpoints = [_]ProduceResponse.NodeEndpoint{
+        .{
+            .node_id = 1,
+            .host = "localhost",
+            .port = 8080,
+            .rack = "asdf",
+        },
+    };
+    var resp: ProduceResponse = .{
+        .responses = &responses,
+        .throttle_time_ms = 0,
+        .node_endpoints = &node_endpoints,
+    };
+
+    var w: Writer = .{};
+    defer w.deinit(alloc);
+
+    const respHeader: ResponseHeader = .{
+        .correlation_id = correlation_id,
+    };
+    try respHeader.write(alloc, &w);
+    try w.writeUvarint(alloc, 0);
+
+    try resp.write(alloc, &w, version);
+
+    try writeRawResponse(io, stream, w.buf.items);
 }
 
 fn readRawRequest(alloc: mem.Allocator, stream_reader: *std.Io.Reader) ![]u8 {

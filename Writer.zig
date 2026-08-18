@@ -51,6 +51,14 @@ pub fn writeCompactString(self: *Writer, alloc: mem.Allocator, val: []const u8) 
     try self.buf.appendSlice(alloc, val);
 }
 
+pub fn writeCompactNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
+    if (val) |str| {
+        try self.writeCompactString(alloc, str);
+    } else {
+        try self.writeUvarint(alloc, 0);
+    }
+}
+
 pub fn writeUuid(self: *Writer, alloc: mem.Allocator, val: [16]u8) !void {
     try self.buf.appendSlice(alloc, &val);
 }
