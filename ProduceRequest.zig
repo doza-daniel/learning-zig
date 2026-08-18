@@ -1,6 +1,7 @@
 const std = @import("std");
 
 const Reader = @import("Reader.zig");
+const RecordBatch = @import("RecordBatch.zig");
 
 const mem = std.mem;
 
@@ -9,6 +10,7 @@ const ProduceRequest = @This();
 const PartitionProduceData = struct {
     index: i32,
     data: []u8,
+    record_batch: RecordBatch,
 
     fn deinit(self: *PartitionProduceData, alloc: mem.Allocator) void {
         alloc.free(self.data);
@@ -99,6 +101,7 @@ pub fn read(self: *ProduceRequest, reader: *Reader, alloc: mem.Allocator) !void 
 fn readTopics(self: *ProduceRequest, reader: *Reader, alloc: mem.Allocator, n: u32) !void {
     self.topic_data = try alloc.alloc(TopicProduceData, n);
     for (0..n) |i| {
+        self.topic_data[i].name = null;
         if (self.version <= 12) {
             if (self.isFlexible()) {
                 self.topic_data[i].name = try reader.readCompactString(alloc);
@@ -125,9 +128,10 @@ fn readPartitions(self: *ProduceRequest, reader: *Reader, alloc: mem.Allocator, 
     _ = self;
     topic_data.partition_data = try alloc.alloc(PartitionProduceData, n);
     for (0..n) |i| {
-        std.debug.print("remaining: {x}\n\n", .{ reader.src });
         topic_data.partition_data[i].index = try reader.readInt(i32);
         topic_data.partition_data[i].data = try reader.readCompactBytes(alloc);
+        var record_batch_reader: Reader = .{ .src = topic_data.partition_data[i].data };
+        try topic_data.partition_data[i].record_batch.read(&record_batch_reader, alloc);
     }
 }
 
