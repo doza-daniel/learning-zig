@@ -19,7 +19,9 @@ pub const NodeEndpoint = struct {
         try writer.writeCompactString(alloc, self.host);
         try writer.writeInt(alloc, @TypeOf(self.port), self.port);
         try writer.writeCompactNullableString(alloc, self.rack);
-        try writer.writeUvarint(alloc, 0);
+        if (isFlexible(version)) {
+            try writer.writeUvarint(alloc, 0);
+        }
     }
 };
 
@@ -33,7 +35,9 @@ pub const BatchIndexAndErrorMessage = struct {
         }
         try writer.writeInt(alloc, @TypeOf(self.batch_index), self.batch_index);
         try writer.writeCompactNullableString(alloc, self.batch_index_error_message);
-        try writer.writeUvarint(alloc, 0);
+        if (isFlexible(version)) {
+            try writer.writeUvarint(alloc, 0);
+        }
     }
 };
 
@@ -47,7 +51,9 @@ pub const LeaderIdAndEpoch = struct {
         }
         try writer.writeInt(alloc, @TypeOf(self.leader_id), self.leader_id);
         try writer.writeInt(alloc, @TypeOf(self.leader_epoch), self.leader_epoch);
-        try writer.writeUvarint(alloc, 0);
+        if (isFlexible(version)) {
+            try writer.writeUvarint(alloc, 0);
+        }
     }
 };
 
@@ -80,11 +86,19 @@ pub const PartitionProduceResponse = struct {
             try writer.writeCompactNullableString(alloc, self.error_message);
         }
 
-        if (version >= 10) {
-            try self.current_leader.write(alloc, writer, version);
+        if (isFlexible(version)) {
+            if (version >= 10 and !std.meta.eql(self.current_leader, LeaderIdAndEpoch{})) {
+                var x: Writer = .{};
+                defer x.deinit(alloc);
+                try self.current_leader.write(alloc, &x, version);
+                try writer.writeUvarint(alloc, 1);
+                try writer.writeUvarint(alloc, 0);
+                try writer.writeUvarint(alloc, @intCast(x.buf.items.len));
+                try writer.buf.appendSlice(alloc, x.buf.items);
+            } else {
+                try writer.writeUvarint(alloc, 0);
+            }
         }
-
-        try writer.writeUvarint(alloc, 0);
     }
 };
 
@@ -106,7 +120,9 @@ pub const TopicProduceResponse = struct {
             try partition_response.write(alloc, writer, version);
         }
 
-        try writer.writeUvarint(alloc, 0);
+        if (isFlexible(version)) {
+            try writer.writeUvarint(alloc, 0);
+        }
     }
 };
 
@@ -124,12 +140,24 @@ pub fn write(self: ProduceResponse, alloc: std.mem.Allocator, writer: *Writer, v
         try writer.writeInt(alloc, @TypeOf(self.throttle_time_ms), self.throttle_time_ms);
     }
 
-    if (version >= 10) {
-        try writer.writeUvarint(alloc, @intCast(self.node_endpoints.len + 1));
-        for (self.node_endpoints) |endpoint| {
-            try endpoint.write(alloc, writer, version);
+    if (isFlexible(version)) {
+        if (version >= 10 and self.node_endpoints.len > 0) {
+            var x: Writer = .{};
+            defer x.deinit(alloc);
+            try x.writeUvarint(alloc, @intCast(self.node_endpoints.len + 1));
+            for (self.node_endpoints) |endpoint| {
+                try endpoint.write(alloc, &x, version);
+            }
+            try writer.writeUvarint(alloc, 1);
+            try writer.writeUvarint(alloc, 0);
+            try writer.writeUvarint(alloc, @intCast(x.buf.items.len));
+            try writer.buf.appendSlice(alloc, x.buf.items);
+        } else {
+            try writer.writeUvarint(alloc, 0);
         }
     }
+}
 
-    try writer.writeUvarint(alloc, 0);
+fn isFlexible(version: i16) bool {
+    return version >= 9;
 }

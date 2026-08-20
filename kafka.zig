@@ -182,7 +182,7 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
     var resp: InitProducerIdResponse = .{
         .throttle_time_ms = 0,
         .error_code = 0,
-        .producer_id = 420,
+        .producer_id = 1,
         .producer_epoch = 0,
     };
 
@@ -218,14 +218,6 @@ fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, re
             .base_offset = 0,
             .log_append_time_ms = 12345,
             .log_start_offset = 0,
-            .current_leader = .{ .leader_id = 1, .leader_epoch = 320 },
-        },
-        .{
-            .index = 1,
-            .error_code = 0,
-            .base_offset = 0,
-            .log_append_time_ms = 54321,
-            .log_start_offset = 5,
             .current_leader = .{ .leader_id = 1, .leader_epoch = 320 },
         },
     };
