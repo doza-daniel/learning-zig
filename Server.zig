@@ -17,6 +17,6 @@ pub fn Start(self: Server, io: std.Io, alloc: mem.Allocator) !void {
 
     while (true) {
         const stream = try netSrv.accept(io);
-        try self.handler(alloc, io, stream);
+        _ = try io.concurrent(self.handler, .{alloc, io, stream});
     }
 }
