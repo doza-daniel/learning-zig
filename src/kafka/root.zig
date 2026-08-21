@@ -281,3 +281,7 @@ fn writeRawResponse(io: std.Io, stream: net.Stream, rawResponse: []u8) !void {
     }
     try stream_writer.flush();
 }
+
+test {
+    std.testing.refAllDecls(@This());
+}
