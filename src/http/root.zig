@@ -4,7 +4,7 @@ const net = std.Io.net;
 const mem = std.mem;
 const http = std.http;
 
-fn http_server(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
+pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     var read_buffer: [4098]u8 = undefined;
     var write_buffer: [4098]u8 = undefined;
 

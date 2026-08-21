@@ -16,7 +16,7 @@ const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
 const ProduceRequest = @import("ProduceRequest.zig");
 const ProduceResponse = @import("ProduceResponse.zig");
 
-pub fn kafka(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
+pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
 
     var buffer: [2096]u8 = undefined;
