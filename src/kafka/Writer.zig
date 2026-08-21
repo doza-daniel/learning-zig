@@ -92,39 +92,42 @@ test "writeUvarint" {
     w.deinit(std.testing.allocator);
 }
 
-test "writeNullableString:null" {
-    var w: Writer = .{};
-    defer w.deinit(std.testing.allocator);
-    try w.writeNullableString(std.testing.allocator, null);
-    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0xFF, 0xFF }));
+test "writeNullableString" {
+    const table = .{
+        .{ .input = null, .expect = [_]u8{ 0xff, 0xff } },
+        .{ .input = "", .expect = [_]u8{ 0x00, 0x00 } },
+        .{ .input = "a", .expect = [_]u8{ 0x00, 0x01, 'a' } },
+        .{ .input = "aa", .expect = [_]u8{ 0x00, 0x02, 'a', 'a' } },
+        .{ .input = "a" ** 256, .expect = [_]u8{ 0x01, 0x00 } ++ [_]u8{'a'} ** 256 },
+    };
+    inline for (table) |case| {
+        var w: Writer = .{};
+        defer w.deinit(std.testing.allocator);
+
+        try w.writeNullableString(std.testing.allocator, case.input);
+
+        var expect = case.expect;
+        try std.testing.expectEqualDeep(&expect, w.buf.items);
+    }
 }
 
-test "writeNullableString:empty" {
-    var w: Writer = .{};
-    defer w.deinit(std.testing.allocator);
-    try w.writeNullableString(std.testing.allocator, "");
-    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x00, 0x00 }));
-}
+test "writeCompactString" {
+    const table = .{
+        .{ .input = "", .expect = [_]u8{0x01} },
+        .{ .input = "a", .expect = [_]u8{ 0x02, 'a' } },
+        .{ .input = "aa", .expect = [_]u8{ 0x03, 'a', 'a' } },
+        .{ .input = "aaa", .expect = [_]u8{ 0x04, 'a', 'a', 'a' } },
+        .{ .input = "a" ** 130, .expect = [_]u8{ 0x83, 0x01 } ++ [_]u8{'a'} ** 130 },
+    };
+    inline for (table) |case| {
+        var w: Writer = .{};
+        defer w.deinit(std.testing.allocator);
 
-test "writeNullableString:happy" {
-    var w: Writer = .{};
-    defer w.deinit(std.testing.allocator);
-    try w.writeNullableString(std.testing.allocator, "happy");
-    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x00, 0x05, 'h', 'a', 'p', 'p', 'y' }));
-}
+        try w.writeCompactString(std.testing.allocator, case.input);
 
-test "writeCompactString:empty" {
-    var w: Writer = .{};
-    defer w.deinit(std.testing.allocator);
-    try w.writeCompactString(std.testing.allocator, "");
-    try std.testing.expect(mem.eql(u8, w.buf.items, &.{0x00}));
-}
-
-test "writeCompactString:happy" {
-    var w: Writer = .{};
-    defer w.deinit(std.testing.allocator);
-    try w.writeCompactString(std.testing.allocator, "happy");
-    try std.testing.expect(mem.eql(u8, w.buf.items, &.{ 0x05, 'h', 'a', 'p', 'p', 'y' }));
+        var expect = case.expect;
+        try std.testing.expectEqualDeep(&expect, w.buf.items);
+    }
 }
 
 test "writeBool:true" {
