@@ -121,6 +121,60 @@ pub fn readCompactBytes(self: *Reader, alloc: mem.Allocator) ![]u8 {
     return ret;
 }
 
+pub fn readCompactArrayOf(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
+    const len = try self.readUvarint();
+    if (len == 0) {
+        return error.UnexpectedNullArray;
+    }
+    if (len == 1) {
+        return &.{};
+    }
+    const x = try alloc.alloc(T, len - 1);
+    for (0..len - 1) |i| {
+        var y: T = undefined;
+        try y.read(self, alloc);
+        x[i] = y;
+    }
+    return x;
+}
+
+test "readCompactArrayOf" {
+    const readable = struct {
+        f1: i16,
+        f2: i8,
+        fn read(self: *@This(), reader: *Reader, _: std.mem.Allocator) !void {
+            self.f1 = try reader.readInt(i16);
+            self.f2 = try reader.readInt(i8);
+        }
+    };
+
+    const table = .{
+        .{ .in = [_]u8{0x00}, .expect = [_]readable{}, .expectError = @as(?anyerror, error.UnexpectedNullArray) },
+        .{ .in = [_]u8{0x01}, .expect = [_]readable{}, .expectError = null },
+        .{ .in = [_]u8{ 0x02, 0x00, 0x01, 0x02 }, .expect = [_]readable{
+            .{ .f1 = 1, .f2 = 2 },
+        }, .expectError = null },
+        .{ .in = [_]u8{ 0x03, 0x72, 0xA1, 0x71, 0x63, 0xC6, 0x62 }, .expect = [_]readable{
+            .{ .f1 = 0x72A1, .f2 = 0x71 },
+            .{ .f1 = 0x63C6, .f2 = 0x62 },
+        }, .expectError = null },
+    };
+
+    inline for (table) |case| {
+        var src = case.in;
+        var reader: Reader = .{ .src = &src };
+
+        if (case.expectError) |err| {
+            try std.testing.expectError(err, reader.readCompactArrayOf(readable, std.testing.allocator));
+        } else {
+            const got = try reader.readCompactArrayOf(readable, std.testing.allocator);
+            defer std.testing.allocator.free(got);
+            var expect = case.expect;
+            try std.testing.expectEqualDeep(&expect, got);
+        }
+    }
+}
+
 test "readUvarint" {
     const table = .{
         .{ .input = [_]u8{0x00}, .expect = 0 },
