@@ -201,10 +201,10 @@ pub fn readArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
     if (len == 0) {
         return &.{};
     }
-    if (self.src.len < len * @sizeOf(T)) {
-        return error.UnexpectedEOF;
-    }
+
     const arr = try alloc.alloc(T, @intCast(len));
+    errdefer alloc.free(arr);
+
     for (0..arr.len) |i| {
         try arr[i].read(self, alloc);
     }
@@ -219,7 +219,10 @@ pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
     if (len == 1) {
         return &.{};
     }
+
     var arr = try alloc.alloc(T, len - 1);
+    errdefer alloc.free(arr);
+
     for (0..arr.len) |i| {
         try arr[i].read(self, alloc);
     }
@@ -227,7 +230,7 @@ pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
 }
 
 pub fn readNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
-    return self.readArray(self, T, alloc) catch |err| {
+    return self.readArray(T, alloc) catch |err| {
         if (err == error.NullArray) {
             return null;
         }
@@ -236,7 +239,7 @@ pub fn readNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
 }
 
 pub fn readCompactNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
-    return self.readCompactArray(self, T, alloc) catch |err| {
+    return self.readCompactArray(T, alloc) catch |err| {
         if (err == error.NullArray) {
             return null;
         }
@@ -245,53 +248,18 @@ pub fn readCompactNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?
 }
 
 pub fn readNullableStruct(self: *Reader, T: type, alloc: mem.Allocator) !?T {
-    const byte = try self.readInt(u8);
+    const byte = try self.readInt(i8);
     if (byte == -1) {
         return null;
     }
+
     if (byte == 1) {
         var result: T = undefined;
         try result.read(self, alloc);
         return result;
     }
+
     return error.UnexpectedByte;
-}
-
-test "readCompactArray" {
-    const readable = struct {
-        f1: i16,
-        f2: i8,
-        fn read(self: *@This(), reader: *Reader, _: std.mem.Allocator) !void {
-            self.f1 = try reader.readInt(i16);
-            self.f2 = try reader.readInt(i8);
-        }
-    };
-
-    const table = .{
-        .{ .in = [_]u8{0x00}, .expect = [_]readable{}, .expectError = @as(?anyerror, error.NullArray) },
-        .{ .in = [_]u8{0x01}, .expect = [_]readable{}, .expectError = null },
-        .{ .in = [_]u8{ 0x02, 0x00, 0x01, 0x02 }, .expect = [_]readable{
-            .{ .f1 = 1, .f2 = 2 },
-        }, .expectError = null },
-        .{ .in = [_]u8{ 0x03, 0x72, 0xA1, 0x71, 0x63, 0xC6, 0x62 }, .expect = [_]readable{
-            .{ .f1 = 0x72A1, .f2 = 0x71 },
-            .{ .f1 = 0x63C6, .f2 = 0x62 },
-        }, .expectError = null },
-    };
-
-    inline for (table) |case| {
-        var src = case.in;
-        var reader: Reader = .{ .src = &src };
-
-        if (case.expectError) |err| {
-            try std.testing.expectError(err, reader.readCompactArray(readable, std.testing.allocator));
-        } else {
-            const got = try reader.readCompactArray(readable, std.testing.allocator);
-            defer std.testing.allocator.free(got);
-            var expect = case.expect;
-            try std.testing.expectEqualDeep(&expect, got);
-        }
-    }
 }
 
 test "readUvarint" {
@@ -791,14 +759,24 @@ test "readCompactNullableBytes" {
 
 test "readArray" {
     const mock = struct {
-        foo: i16,
-        bar: i8,
-        fn read(_: *@This(), _: *Reader, _: mem.Allocator) !void {
-
+        foo: u16,
+        bar: u8,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+            self.foo = try reader.readInt(u16);
+            self.bar = try reader.readInt(u8);
         }
     };
     const table = .{
-        .{ .input = [_]u8{0xFF, 0xFF, 0xFF, 0xFF}, .expect = [_]mock{}, .expect_error = @as(?anyerror, error.NullArray)},
+        .{ .input = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF }, .expect = [_]mock{}, .expect_error = @as(?anyerror, error.NullArray) },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x01 }, .expect = [_]mock{}, .expect_error = @as(?anyerror, error.UnexpectedEOF) },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x00 }, .expect = [_]mock{}, .expect_error = null },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0xF1, 0xF2, 0xF3 }, .expect = [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+        }, .expect_error = null },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x02, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6 }, .expect = [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+            .{ .foo = 0xF4F5, .bar = 0xF6 },
+        }, .expect_error = null },
     };
     inline for (table) |case| {
         var in = case.input;
@@ -807,10 +785,157 @@ test "readArray" {
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
+            try std.testing.expectEqual(0, reader.src.len);
             const arr = try got;
             defer std.testing.allocator.free(arr);
             var expect = case.expect;
             try std.testing.expectEqualSlices(mock, &expect, arr);
+        }
+    }
+}
+
+test "readCompactArray" {
+    const mock = struct {
+        foo: u16,
+        bar: u8,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+            self.foo = try reader.readInt(u16);
+            self.bar = try reader.readInt(u8);
+        }
+    };
+    const table = .{
+        .{ .input = [_]u8{0x00}, .expect = [_]mock{}, .expect_error = @as(?anyerror, error.NullArray) },
+        .{ .input = [_]u8{0x02}, .expect = [_]mock{}, .expect_error = @as(?anyerror, error.UnexpectedEOF) },
+        .{ .input = [_]u8{0x01}, .expect = [_]mock{}, .expect_error = null },
+        .{ .input = [_]u8{ 0x02, 0xF1, 0xF2, 0xF3 }, .expect = [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+        }, .expect_error = null },
+        .{ .input = [_]u8{ 0x03, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6 }, .expect = [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+            .{ .foo = 0xF4F5, .bar = 0xF6 },
+        }, .expect_error = null },
+    };
+    inline for (table) |case| {
+        var in = case.input;
+        var reader: Reader = .{ .src = &in };
+        const got = reader.readCompactArray(mock, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            // try std.testing.expectEqual(0, reader.src.len);
+            const arr = try got;
+            defer std.testing.allocator.free(arr);
+            var expect = case.expect;
+            try std.testing.expectEqualSlices(mock, &expect, arr);
+        }
+    }
+}
+
+test "readNullableArray" {
+    const mock = struct {
+        foo: u16,
+        bar: u8,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+            self.foo = try reader.readInt(u16);
+            self.bar = try reader.readInt(u8);
+        }
+    };
+    const table = .{
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x01 }, .expect = &.{}, .expect_error = @as(?anyerror, error.UnexpectedEOF) },
+        .{ .input = [_]u8{ 0xFF, 0xFF, 0xFF, 0xFF }, .expect = @as(?[]u8, null), .expect_error = null },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x00 }, .expect = @as(?[0]mock, [_]mock{}), .expect_error = null },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x01, 0xF1, 0xF2, 0xF3 }, .expect = @as(?[1]mock, [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+        }), .expect_error = null },
+        .{ .input = [_]u8{ 0x00, 0x00, 0x00, 0x02, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6 }, .expect = @as(?[2]mock, [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+            .{ .foo = 0xF4F5, .bar = 0xF6 },
+        }), .expect_error = null },
+    };
+    inline for (table) |case| {
+        var in = case.input;
+        var reader: Reader = .{ .src = &in };
+        const got = reader.readNullableArray(mock, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            try std.testing.expectEqual(0, reader.src.len);
+            const nullableArr = try got;
+            if (nullableArr) |arr| {
+                defer std.testing.allocator.free(arr);
+                var expect = case.expect.?;
+                try std.testing.expectEqualSlices(mock, &expect, arr);
+            } else {
+                try std.testing.expect(case.expect == null);
+            }
+        }
+    }
+}
+
+test "readCompactNullableArray" {
+    const mock = struct {
+        foo: u16,
+        bar: u8,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+            self.foo = try reader.readInt(u16);
+            self.bar = try reader.readInt(u8);
+        }
+    };
+    const table = .{
+        .{ .input = [_]u8{0x02}, .expect = &.{}, .expect_error = @as(?anyerror, error.UnexpectedEOF) },
+        .{ .input = [_]u8{0x00}, .expect = @as(?[]u8, null), .expect_error = null },
+        .{ .input = [_]u8{0x01}, .expect = @as(?[0]mock, [_]mock{}), .expect_error = null },
+        .{ .input = [_]u8{ 0x02, 0xF1, 0xF2, 0xF3 }, .expect = @as(?[1]mock, [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+        }), .expect_error = null },
+        .{ .input = [_]u8{ 0x03, 0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6 }, .expect = @as(?[2]mock, [_]mock{
+            .{ .foo = 0xF1F2, .bar = 0xF3 },
+            .{ .foo = 0xF4F5, .bar = 0xF6 },
+        }), .expect_error = null },
+    };
+    inline for (table) |case| {
+        var in = case.input;
+        var reader: Reader = .{ .src = &in };
+        const got = reader.readCompactNullableArray(mock, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            try std.testing.expectEqual(0, reader.src.len);
+            const nullableArr = try got;
+            if (nullableArr) |arr| {
+                defer std.testing.allocator.free(arr);
+                var expect = case.expect.?;
+                try std.testing.expectEqualSlices(mock, &expect, arr);
+            } else {
+                try std.testing.expect(case.expect == null);
+            }
+        }
+    }
+}
+
+test "readNullbleStruct" {
+    const mock = struct {
+        foo: u16,
+        bar: u8,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+            self.foo = try reader.readInt(u16);
+            self.bar = try reader.readInt(u8);
+        }
+    };
+    const table = .{
+        .{ .input = [_]u8{0xFF}, .expect = @as(?mock, null), .expect_error = null },
+        .{ .input = [_]u8{ 0x01, 0xF1, 0xF2, 0xF3 }, .expect = @as(?mock, mock{ .foo = 0xF1F2, .bar = 0xF3 }), .expect_error = null },
+        .{ .input = [_]u8{0x02}, .expect = @as(?mock, null), .expect_error = @as(?anyerror, error.UnexpectedByte) },
+    };
+    inline for (table) |case| {
+        var in = case.input;
+        var reader: Reader = .{ .src = &in };
+        const got = reader.readNullableStruct(mock, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            const m = try got;
+            try std.testing.expectEqualDeep(case.expect, m);
         }
     }
 }
