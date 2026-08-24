@@ -33,14 +33,12 @@ const Msg = struct {
 
 const typeInfo = struct {
     t: Type,
-    name: ?[]const u8 = null,
+    name: []const u8 = "",
     sub: ?*@This() = null,
 
     fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
-        if (self.name) |str| {
-            if (self.t == .Struct or self.t == .Array) {
-                alloc.free(str);
-            }
+        if (self.t == .Struct or self.t == .Array) {
+            alloc.free(self.name);
         }
         if (self.sub) |s| {
             s.deinit(alloc);
@@ -90,7 +88,7 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
 
-    var close: bool = false;
+    var close_struct: bool = false;
 
     switch (tinfo.t) {
         .Request, .Response, .Data => {
@@ -100,15 +98,14 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
             std.debug.print("const {s} = @This();\n", .{T.name});
         },
         .Struct => {
-            std.debug.print("const {s} = struct{{\n", .{tinfo.name.?});
-            close = true;
+            std.debug.print("const {s} = struct{{\n", .{tinfo.name});
+            close_struct = true;
         },
         .Array => {
             if (tinfo.sub) |sub| {
                 if (sub.t == .Struct) {
-                    // push to queue
-                    std.debug.print("const {s} = struct{{\n", .{sub.name.?});
-                    close = true;
+                    std.debug.print("const {s} = struct{{\n", .{sub.name});
+                    close_struct = true;
                 }
             }
         },
@@ -122,7 +119,7 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
             .Struct, .Array => try q.pushBack(alloc, field),
             else => {},
         }
-        std.debug.print("{s}: {s},\n", .{ field.name, finfo.name.? });
+        std.debug.print("{s}: {s},\n", .{ field.name, finfo.name });
     }
     std.debug.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator) !void {{\n", .{});
     for (T.fields) |field| {
@@ -164,7 +161,7 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
                 std.debug.print("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
             },
             .Array => {
-                std.debug.print("self.{s} = try reader.readArray({s}, alloc);\n", .{ field.name, finfo.sub.?.name.? });
+                std.debug.print("self.{s} = try reader.readArray({s}, alloc);\n", .{ field.name, finfo.sub.?.name });
             },
             .Struct => {
                 std.debug.print("try self.{s}.read(reader, alloc);\n", .{field.name});
@@ -176,13 +173,12 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
                 std.debug.print("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
             },
 
-            // TODO: fix
             .Response, .Request, .Data => unreachable,
         }
     }
     std.debug.print("}}\n", .{});
 
-    if (close) {
+    if (close_struct) {
         std.debug.print("}};\n", .{});
     }
 
@@ -194,13 +190,13 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
 fn parseTypeInfo(s: []const u8, alloc: std.mem.Allocator) !*typeInfo {
     const result = try alloc.create(typeInfo);
     result.t = try parseType(s);
-    result.name = null;
+    result.name = "";
     result.sub = null;
 
     switch (result.t) {
         .Array => {
             result.sub = try parseTypeInfo(s[2..], alloc);
-            result.name = try std.fmt.allocPrint(alloc, "[]{s}", .{result.sub.?.name.?});
+            result.name = try std.fmt.allocPrint(alloc, "[]{s}", .{result.sub.?.name});
         },
 
         .Struct => result.name = try alloc.dupe(u8, s),
