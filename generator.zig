@@ -9,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     for (paths) |path| {
-        try readAndPrint(init, path);
+        try handleFile(init, path);
     }
 }
 
@@ -31,7 +31,7 @@ const Msg = struct {
     fields: []Field,
 };
 
-fn readAndPrint(init: std.process.Init, path: []const u8) !void {
+fn handleFile(init: std.process.Init, path: []const u8) !void {
     const file_content = try std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .unlimited);
     defer init.gpa.free(file_content);
 
@@ -41,10 +41,14 @@ fn readAndPrint(init: std.process.Init, path: []const u8) !void {
     const parsed = try json.parseFromSlice(Msg, init.gpa, clean, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    try codeGen(parsed.value, init.gpa);
+    var out_buffer: [10000]u8 = undefined;
+    var out = std.Io.File.stdout().writer(init.io, &out_buffer);
+    defer out.flush() catch |err| std.debug.print("failed to flush: {any}", .{err});
+
+    try codeGen(parsed.value, init.gpa, &out.interface);
 }
 
-fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
+fn codeGen(T: anytype, alloc: std.mem.Allocator, out: *std.Io.Writer) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
 
@@ -52,19 +56,19 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
 
     switch (T.type.*) {
         .request, .response, .data, .header => {
-            std.debug.print("const std = @import(\"std\");\n", .{});
-            std.debug.print("const Reader = @import(\"Reader.zig\");\n", .{});
-            std.debug.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
-            std.debug.print("const {s} = @This();\n", .{T.name});
+            try out.print("const std = @import(\"std\");\n", .{});
+            try out.print("const Reader = @import(\"Reader.zig\");\n", .{});
+            try out.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
+            try out.print("const {s} = @This();\n", .{T.name});
         },
         .structure => |struct_name| {
-            std.debug.print("const {s} = struct{{\n", .{struct_name});
+            try out.print("const {s} = struct{{\n", .{struct_name});
             close_struct = true;
         },
         .array => |arr| {
             switch (arr.elements.*) {
                 .structure => |struct_name| {
-                    std.debug.print("const {s} = struct{{\n", .{struct_name});
+                    try out.print("const {s} = struct{{\n", .{struct_name});
                     close_struct = true;
                 },
                 else => unreachable,
@@ -78,68 +82,68 @@ fn codeGen(T: anytype, alloc: std.mem.Allocator) !void {
             .array => try q.pushBack(alloc, field),
             else => {},
         }
-        std.debug.print("{s}: {s},\n", .{ field.name, field.type.zigType() orelse "{FIX ME}" });
+        try out.print("{s}: {s},\n", .{ field.name, field.type.zigType() orelse "{FIX ME}" });
     }
-    std.debug.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator) !void {{\n", .{});
+    try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator) !void {{\n", .{});
     for (T.fields) |field| {
         switch (field.type.*) {
             .bool => {
-                std.debug.print("self.{s} = try reader.readBool();\n", .{field.name});
+                try out.print("self.{s} = try reader.readBool();\n", .{field.name});
             },
             .int8 => {
-                std.debug.print("self.{s} = try reader.readInt(i8);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(i8);\n", .{field.name});
             },
             .int16 => {
-                std.debug.print("self.{s} = try reader.readInt(i16);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(i16);\n", .{field.name});
             },
             .int32 => {
-                std.debug.print("self.{s} = try reader.readInt(i32);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(i32);\n", .{field.name});
             },
             .int64 => {
-                std.debug.print("self.{s} = try reader.readInt(i64);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(i64);\n", .{field.name});
             },
             .uint16 => {
-                std.debug.print("self.{s} = try reader.readInt(u16);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(u16);\n", .{field.name});
             },
             .uint32 => {
-                std.debug.print("self.{s} = try reader.readInt(u32);\n", .{field.name});
+                try out.print("self.{s} = try reader.readInt(u32);\n", .{field.name});
             },
             .uuid => {
-                std.debug.print("self.{s} = try reader.readUuid();\n", .{field.name});
+                try out.print("self.{s} = try reader.readUuid();\n", .{field.name});
             },
             .float64 => {
-                std.debug.print("self.{s} = try reader.readFloat64();\n", .{field.name});
+                try out.print("self.{s} = try reader.readFloat64();\n", .{field.name});
             },
             .string => {
-                std.debug.print("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                try out.print("self.{s} = try reader.readString(alloc);\n", .{field.name});
             },
             .bytes => {
-                std.debug.print("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
+                try out.print("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
             },
             .array => |arr| {
-                std.debug.print("self.{s} = try reader.readArray({s}, alloc);\n", .{ field.name, arr.elements.zigType() orelse "{FIX ME}" });
+                try out.print("self.{s} = try reader.readArray({s}, alloc);\n", .{ field.name, arr.elements.zigType() orelse "{FIX ME}" });
             },
             .structure => {
-                std.debug.print("try self.{s}.read(reader, alloc);\n", .{field.name});
+                try out.print("try self.{s}.read(reader, alloc);\n", .{field.name});
             },
             .records => {
-                std.debug.print("var bytes = try reader.readBytes(alloc);\n", .{});
-                std.debug.print("defer alloc.free(bytes);\n", .{});
-                std.debug.print("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
-                std.debug.print("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
+                try out.print("var bytes = try reader.readBytes(alloc);\n", .{});
+                try out.print("defer alloc.free(bytes);\n", .{});
+                try out.print("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
+                try out.print("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
             },
 
             .response, .request, .data, .header => unreachable,
         }
     }
-    std.debug.print("}}\n", .{});
+    try out.print("}}\n", .{});
 
     if (close_struct) {
-        std.debug.print("}};\n", .{});
+        try out.print("}};\n", .{});
     }
 
     while (q.len > 0) {
-        try codeGen(q.popFront().?, alloc);
+        try codeGen(q.popFront().?, alloc, out);
     }
 }
 
