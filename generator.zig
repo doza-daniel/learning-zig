@@ -245,7 +245,7 @@ const Ti = union(enum) {
     },
     structure: []const u8,
 
-    fn zigType(self: Ti) ![]const u8 {
+    fn zigType(self: Ti) ?[]const u8 {
         return switch (self) {
             .bool => "bool",
             .int8 => "i8",
@@ -260,7 +260,7 @@ const Ti = union(enum) {
             .bytes => "[]u8",
             .array => |arr| arr.name,
             .structure => |name| name,
-            else => error.NoName,
+            else => null,
         };
     }
 
@@ -407,25 +407,25 @@ test "parse_array" {
 }
 
 test "zig_type" {
-    try std.testing.expectEqualStrings("bool", try @as(Ti, .bool).zigType());
-    try std.testing.expectEqualStrings("i8", try @as(Ti, .int8).zigType());
-    try std.testing.expectEqualStrings("i16", try @as(Ti, .int16).zigType());
-    try std.testing.expectEqualStrings("i32", try @as(Ti, .int32).zigType());
-    try std.testing.expectEqualStrings("i64", try @as(Ti, .int64).zigType());
-    try std.testing.expectEqualStrings("u16", try @as(Ti, .uint16).zigType());
-    try std.testing.expectEqualStrings("u32", try @as(Ti, .uint32).zigType());
-    try std.testing.expectEqualStrings("[16]u8", try @as(Ti, .uuid).zigType());
-    try std.testing.expectEqualStrings("f64", try @as(Ti, .float64).zigType());
-    try std.testing.expectEqualStrings("[]const u8", try @as(Ti, .string).zigType());
-    try std.testing.expectEqualStrings("[]u8", try @as(Ti, .bytes).zigType());
+    try std.testing.expectEqualStrings("bool", @as(Ti, .bool).zigType().?);
+    try std.testing.expectEqualStrings("i8", @as(Ti, .int8).zigType().?);
+    try std.testing.expectEqualStrings("i16", @as(Ti, .int16).zigType().?);
+    try std.testing.expectEqualStrings("i32", @as(Ti, .int32).zigType().?);
+    try std.testing.expectEqualStrings("i64", @as(Ti, .int64).zigType().?);
+    try std.testing.expectEqualStrings("u16", @as(Ti, .uint16).zigType().?);
+    try std.testing.expectEqualStrings("u32", @as(Ti, .uint32).zigType().?);
+    try std.testing.expectEqualStrings("[16]u8", @as(Ti, .uuid).zigType().?);
+    try std.testing.expectEqualStrings("f64", @as(Ti, .float64).zigType().?);
+    try std.testing.expectEqualStrings("[]const u8", @as(Ti, .string).zigType().?);
+    try std.testing.expectEqualStrings("[]u8", @as(Ti, .bytes).zigType().?);
 
-    try std.testing.expectEqualStrings("[]Pera", try @as(Ti, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType());
-    try std.testing.expectEqualStrings("MyStruct", try @as(Ti, .{ .structure = "MyStruct" }).zigType());
+    try std.testing.expectEqualStrings("[]Pera", @as(Ti, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType().?);
+    try std.testing.expectEqualStrings("MyStruct", @as(Ti, .{ .structure = "MyStruct" }).zigType().?);
 
-    try std.testing.expectError(error.NoName, @as(Ti, .records).zigType());
-    try std.testing.expectError(error.NoName, @as(Ti, .header).zigType());
-    try std.testing.expectError(error.NoName, @as(Ti, .request).zigType());
-    try std.testing.expectError(error.NoName, @as(Ti, .response).zigType());
+    try std.testing.expectEqual(null, @as(Ti, .records).zigType());
+    try std.testing.expectEqual(null, @as(Ti, .header).zigType());
+    try std.testing.expectEqual(null, @as(Ti, .request).zigType());
+    try std.testing.expectEqual(null, @as(Ti, .response).zigType());
 }
 
 const typeMap: std.static_string_map.StaticStringMap(Type) = .initComptime(&[_]struct { []const u8, Type }{
