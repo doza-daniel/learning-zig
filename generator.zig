@@ -221,6 +221,213 @@ fn parseTypeInfo(s: []const u8, alloc: std.mem.Allocator) !*typeInfo {
     return result;
 }
 
+const Ti = union(enum) {
+    bool: void,
+    int8: void,
+    int16: void,
+    int32: void,
+    int64: void,
+    uint16: void,
+    uint32: void,
+    uuid: void,
+    float64: void,
+    string: void,
+    bytes: void,
+    data: void,
+    records: void,
+    response: void,
+    request: void,
+    header: void,
+
+    array: struct {
+        name: []const u8,
+        elements: *Ti,
+    },
+    structure: []const u8,
+
+    fn zigType(self: Ti) ![]const u8 {
+        return switch (self) {
+            .bool => "bool",
+            .int8 => "i8",
+            .int16 => "i16",
+            .int32 => "i32",
+            .int64 => "i64",
+            .uint16 => "u16",
+            .uint32 => "u32",
+            .uuid => "[16]u8",
+            .float64 => "f64",
+            .string => "[]const u8",
+            .bytes => "[]u8",
+            .array => |arr| arr.name,
+            .structure => |name| name,
+            else => error.NoName,
+        };
+    }
+
+    fn parse(str: []const u8, alloc: std.mem.Allocator) !*Ti {
+        const result = try alloc.create(Ti);
+        errdefer alloc.destroy(result);
+
+        if (std.meta.stringToEnum(std.meta.Tag(Ti), str)) |tag| {
+            switch (tag) {
+                .bool => |t| result.* = t,
+                .int8 => |t| result.* = t,
+                .int16 => |t| result.* = t,
+                .int32 => |t| result.* = t,
+                .int64 => |t| result.* = t,
+                .uint16 => |t| result.* = t,
+                .uint32 => |t| result.* = t,
+                .uuid => |t| result.* = t,
+                .float64 => |t| result.* = t,
+                .string => |t| result.* = t,
+                .bytes => |t| result.* = t,
+                .data => |t| result.* = t,
+                .records => |t| result.* = t,
+                .response => |t| result.* = t,
+                .request => |t| result.* = t,
+                .header => |t| result.* = t,
+
+                .array, .structure => return error.BadPrimitive,
+            }
+            return result;
+        }
+
+        // parse array
+        if (str.len > 2 and str[0] == '[' and str[1] == ']') {
+            const elements = try parse(str[2..], alloc);
+            result.* = .{
+                .array = .{
+                    .name = try std.fmt.allocPrint(alloc, "[]{s}", .{try elements.zigType()}),
+                    .elements = elements,
+                },
+            };
+            return result;
+        }
+
+        // finally, try parse struct
+        for (str) |c| {
+            if (!std.ascii.isAlphanumeric(c)) {
+                return error.BadStructIdent;
+            }
+        }
+        result.* = .{
+            .structure = try alloc.dupe(u8, str),
+        };
+        return result;
+    }
+
+    fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+        defer alloc.destroy(self);
+        switch (self.*) {
+            .array => |arr| {
+                arr.elements.deinit(alloc);
+                alloc.free(arr.name);
+            },
+            .structure => |name| {
+                alloc.free(name);
+            },
+            else => {},
+        }
+    }
+};
+
+test "parse_primitives" {
+    const table = .{
+        .{ .in = "bool", .expect = .bool },
+        .{ .in = "int8", .expect = .int8 },
+        .{ .in = "int16", .expect = .int16 },
+        .{ .in = "int32", .expect = .int32 },
+        .{ .in = "int64", .expect = .int64 },
+        .{ .in = "uint16", .expect = .uint16 },
+        .{ .in = "uint32", .expect = .uint32 },
+        .{ .in = "uuid", .expect = .uuid },
+        .{ .in = "float64", .expect = .float64 },
+        .{ .in = "string", .expect = .string },
+        .{ .in = "bytes", .expect = .bytes },
+        .{ .in = "data", .expect = .data },
+        .{ .in = "records", .expect = .records },
+        .{ .in = "response", .expect = .response },
+        .{ .in = "request", .expect = .request },
+        .{ .in = "header", .expect = .header },
+    };
+    inline for (table) |case| {
+        const parsed = try Ti.parse(case.in, std.testing.allocator);
+        defer parsed.deinit(std.testing.allocator);
+        try std.testing.expectEqual(case.expect, parsed.*);
+    }
+
+    const my_array = try Ti.parse("[]MyStruct", std.testing.allocator);
+    defer my_array.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("[]MyStruct", my_array.array.name);
+
+    try std.testing.expectError(error.BadPrimitive, Ti.parse("structure", std.testing.allocator));
+    try std.testing.expectError(error.BadPrimitive, Ti.parse("array", std.testing.allocator));
+}
+
+test "parse_struct" {
+    const table = .{
+        .{ .in = "foo", .expect_error = null },
+        .{ .in = "fooBar", .expect_error = null },
+        .{ .in = "fooBar1", .expect_error = null },
+        .{ .in = "MyStruct", .expect_error = null },
+        .{ .in = "MyStruct_", .expect_error = @as(?anyerror, error.BadStructIdent) },
+    };
+    inline for (table) |case| {
+        const got = Ti.parse(case.in, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            const parsed = try got;
+            defer parsed.deinit(std.testing.allocator);
+            try std.testing.expectEqualStrings(case.in, parsed.structure);
+        }
+    }
+}
+
+test "parse_array" {
+    const table = .{
+        .{ .in = "[]foo", .expect_error = null },
+        .{ .in = "[]fooBar", .expect_error = null },
+        .{ .in = "[]fooBar1", .expect_error = null },
+        .{ .in = "[]MyStruct", .expect_error = null },
+        .{ .in = "[]MyStruct_", .expect_error = @as(?anyerror, error.BadStructIdent) },
+        .{ .in = "[]structure", .expect_error = @as(?anyerror, error.BadPrimitive) },
+        .{ .in = "[]array", .expect_error = @as(?anyerror, error.BadPrimitive) },
+    };
+    inline for (table) |case| {
+        const got = Ti.parse(case.in, std.testing.allocator);
+        if (case.expect_error) |err| {
+            try std.testing.expectError(err, got);
+        } else {
+            const parsed = try got;
+            defer parsed.deinit(std.testing.allocator);
+            try std.testing.expectEqualStrings(case.in, parsed.array.name);
+        }
+    }
+}
+
+test "zig_type" {
+    try std.testing.expectEqualStrings("bool", try @as(Ti, .bool).zigType());
+    try std.testing.expectEqualStrings("i8", try @as(Ti, .int8).zigType());
+    try std.testing.expectEqualStrings("i16", try @as(Ti, .int16).zigType());
+    try std.testing.expectEqualStrings("i32", try @as(Ti, .int32).zigType());
+    try std.testing.expectEqualStrings("i64", try @as(Ti, .int64).zigType());
+    try std.testing.expectEqualStrings("u16", try @as(Ti, .uint16).zigType());
+    try std.testing.expectEqualStrings("u32", try @as(Ti, .uint32).zigType());
+    try std.testing.expectEqualStrings("[16]u8", try @as(Ti, .uuid).zigType());
+    try std.testing.expectEqualStrings("f64", try @as(Ti, .float64).zigType());
+    try std.testing.expectEqualStrings("[]const u8", try @as(Ti, .string).zigType());
+    try std.testing.expectEqualStrings("[]u8", try @as(Ti, .bytes).zigType());
+
+    try std.testing.expectEqualStrings("[]Pera", try @as(Ti, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType());
+    try std.testing.expectEqualStrings("MyStruct", try @as(Ti, .{ .structure = "MyStruct" }).zigType());
+
+    try std.testing.expectError(error.NoName, @as(Ti, .records).zigType());
+    try std.testing.expectError(error.NoName, @as(Ti, .header).zigType());
+    try std.testing.expectError(error.NoName, @as(Ti, .request).zigType());
+    try std.testing.expectError(error.NoName, @as(Ti, .response).zigType());
+}
+
 const typeMap: std.static_string_map.StaticStringMap(Type) = .initComptime(&[_]struct { []const u8, Type }{
     .{ "bool", .Boolean },
     .{ "int8", .Int8 },
