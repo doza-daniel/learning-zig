@@ -8,9 +8,9 @@ const Writer = std.Io.Writer;
 const Field = struct {
     type: *TypeInfo,
     name: []const u8,
-    versions: []const u8,
-    nullableVersions: []const u8 = "",
-    flexibleVersions: []const u8 = "",
+    versions: VersionInfo,
+    nullableVersions: ?VersionInfo = null,
+    flexibleVersions: ?VersionInfo = null,
     fields: []Field = &.{},
 };
 
@@ -18,8 +18,8 @@ const Msg = struct {
     apiKey: i16 = 0,
     type: *TypeInfo,
     name: []const u8,
-    validVersions: []const u8,
-    flexibleVersions: []const u8,
+    validVersions: VersionInfo = .{},
+    flexibleVersions: ?VersionInfo = null,
     fields: []Field,
 };
 
@@ -147,6 +147,42 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
         try codeGen(q.popFront().?, alloc, out);
     }
 }
+
+const VersionInfo = struct {
+    min: ?u4 = null,
+    max: ?u4 = null,
+
+    fn parse(str: []const u8) !VersionInfo {
+        var ret: VersionInfo = .{};
+
+        if (str.len == 0 or std.ascii.eqlIgnoreCase(str, "none")) {
+            return ret;
+        }
+
+        if (str[str.len - 1] == '+') {
+            ret.min = try std.fmt.parseInt(u4, str[0 .. str.len - 1], 10);
+            return ret;
+        }
+
+        if (std.ascii.findIgnoreCase(str, "-")) |i| {
+            ret.min = try std.fmt.parseInt(u4, str[0..i], 10);
+            ret.max = try std.fmt.parseInt(u4, str[i + 1 ..], 10);
+            return ret;
+        }
+
+        // TODO: figure out how to return custom error
+        return error.Overflow;
+    }
+
+    pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
+        return switch (try source.nextAllocMax(alloc, .alloc_always, opts.max_value_len.?)) {
+            .allocated_string => |s| {
+                return try VersionInfo.parse(s);
+            },
+            else => unreachable,
+        };
+    }
+};
 
 const TypeInfo = union(enum) {
     bool: void,
