@@ -3,16 +3,6 @@ const std = @import("std");
 const json = std.json;
 const mem = std.mem;
 
-pub fn main(init: std.process.Init) !void {
-    const paths = [_][]const u8{
-        "./protocol_json_files/ProduceRequest.json",
-    };
-
-    for (paths) |path| {
-        try handleFile(init, path);
-    }
-}
-
 const Field = struct {
     type: *Ti,
     name: []const u8,
@@ -31,7 +21,7 @@ const Msg = struct {
     fields: []Field,
 };
 
-fn handleFile(init: std.process.Init, path: []const u8) !void {
+pub fn handleFile(init: std.process.Init, path: []const u8) !void {
     const file_content = try std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .unlimited);
     defer init.gpa.free(file_content);
 
@@ -41,7 +31,7 @@ fn handleFile(init: std.process.Init, path: []const u8) !void {
     const parsed = try json.parseFromSlice(Msg, init.gpa, clean, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    var out_buffer: [10000]u8 = undefined;
+    var out_buffer: [4096]u8 = undefined;
     var out = std.Io.File.stdout().writer(init.io, &out_buffer);
     defer out.flush() catch |err| std.debug.print("failed to flush: {any}", .{err});
 
