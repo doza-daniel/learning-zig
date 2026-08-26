@@ -18,7 +18,7 @@ const Msg = struct {
     apiKey: i16 = 0,
     type: *TypeInfo,
     name: []const u8,
-    validVersions: VersionInfo = .{},
+    validVersions: VersionInfo,
     flexibleVersions: ?VersionInfo = null,
     fields: []Field,
 };
@@ -91,53 +91,119 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
         }
         try out.print("{s}: {s},\n", .{ field.name, field.type.zigType() orelse "{FIX ME}" });
     }
-    try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator) !void {{\n", .{});
+
+    const formatter = struct {
+        field: Field,
+        writer: *Writer,
+
+        fn versioned(self: @This(), comptime fmt: []const u8, args: anytype) !void {
+            const should_close = self.generateIf() catch |err| switch (err) {
+                error.VersionNone => return,
+                else => return err,
+            };
+            try self.writer.print(fmt, args);
+            if (should_close) {
+                try self.writer.print("}}\n", .{});
+            }
+        }
+
+        fn versionedBlock(self: @This(), f: *const fn (*Writer, Field) anyerror!void) !void {
+            const should_close = self.generateIf() catch |err| switch (err) {
+                error.VersionNone => return,
+                else => return err,
+            };
+            try f(self.writer, self.field);
+            if (should_close) {
+                try self.writer.print("}}\n", .{});
+            }
+        }
+
+        fn generateIf(self: @This()) !bool {
+            return switch (self.field.versions) {
+                .none => error.VersionNone,
+                .exact => |v| {
+                    try self.writer.print("if (version == {d}) {{", .{v});
+                    return true;
+                },
+                .range => |r| {
+                    if (r.min == 0 and r.max == null) {
+                        return false;
+                    }
+                    try self.writer.print("if (", .{});
+                    if (r.min > 0) {
+                        try self.writer.print("version >= {d}", .{r.min});
+                    }
+                    const logical_op = if (r.min > 0) " and " else "";
+                    if (r.max) |max| {
+                        try self.writer.print("{s}version <= {d}", .{ logical_op, max });
+                    }
+                    try self.writer.print(") {{\n", .{});
+                    return true;
+                },
+            };
+        }
+    };
+
+    try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     for (T.fields) |field| {
+        const fmt: formatter = .{ .field = field, .writer = out };
         switch (field.type.*) {
             .bool => {
-                try out.print("self.{s} = try reader.readBool();\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readBool();\n", .{field.name});
             },
             .int8 => {
-                try out.print("self.{s} = try reader.readInt(i8);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(i8);\n", .{field.name});
             },
             .int16 => {
-                try out.print("self.{s} = try reader.readInt(i16);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(i16);\n", .{field.name});
             },
             .int32 => {
-                try out.print("self.{s} = try reader.readInt(i32);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(i32);\n", .{field.name});
             },
             .int64 => {
-                try out.print("self.{s} = try reader.readInt(i64);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(i64);\n", .{field.name});
             },
             .uint16 => {
-                try out.print("self.{s} = try reader.readInt(u16);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(u16);\n", .{field.name});
             },
             .uint32 => {
-                try out.print("self.{s} = try reader.readInt(u32);\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readInt(u32);\n", .{field.name});
             },
             .uuid => {
-                try out.print("self.{s} = try reader.readUuid();\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readUuid();\n", .{field.name});
             },
             .float64 => {
-                try out.print("self.{s} = try reader.readFloat64();\n", .{field.name});
+                try fmt.versioned("self.{s} = try reader.readFloat64();\n", .{field.name});
             },
             .string => {
-                try out.print("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                // TODO: flex + nullable
+                try fmt.versioned("self.{s} = try reader.readString(alloc);\n", .{field.name});
             },
             .bytes => {
-                try out.print("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
+                // TODO: flex + nullable
+                try fmt.versioned("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
             },
+            // TODO: flex + nullable
             .array => |arr| {
-                try out.print("self.{s} = try reader.readArray({s}, alloc);\n", .{ field.name, arr.elements.zigType() orelse "{FIX ME}" });
+                try fmt.versioned(
+                    "self.{s} = try reader.readArray({s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().? },
+                );
             },
             .structure => {
-                try out.print("try self.{s}.read(reader, alloc);\n", .{field.name});
+                try fmt.versioned("try self.{s}.read(reader, alloc);\n", .{field.name});
             },
             .records => {
-                try out.print("var bytes = try reader.readBytes(alloc);\n", .{});
-                try out.print("defer alloc.free(bytes);\n", .{});
-                try out.print("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
-                try out.print("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
+                const anon = struct {
+                    fn block(w: *Writer, f: Field) !void {
+                        // TODO: flex + nullable
+                        try w.print("var bytes = try reader.readBytes(alloc);\n", .{});
+                        try w.print("defer alloc.free(bytes);\n", .{});
+                        try w.print("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
+                        try w.print("try self.{s}.read(&record_reader, alloc);\n", .{f.name});
+                    }
+                };
+                try fmt.versionedBlock(anon.block);
             },
 
             .response, .request, .data, .header => unreachable,
@@ -154,30 +220,37 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     }
 }
 
-const VersionInfo = struct {
-    min: ?u4 = null,
-    max: ?u4 = null,
+const VersionInfo = union(enum) {
+    none: void,
+    exact: u4,
+    range: struct {
+        min: u4,
+        max: ?u4 = null,
+    },
 
     fn parse(str: []const u8) !VersionInfo {
-        var ret: VersionInfo = .{};
-
         if (str.len == 0 or std.ascii.eqlIgnoreCase(str, "none")) {
-            return ret;
+            return .none;
         }
 
         if (str[str.len - 1] == '+') {
-            ret.min = try std.fmt.parseInt(u4, str[0 .. str.len - 1], 10);
-            return ret;
+            return .{
+                .range = .{
+                    .min = try std.fmt.parseInt(u4, str[0 .. str.len - 1], 10),
+                },
+            };
         }
 
         if (std.ascii.findIgnoreCase(str, "-")) |i| {
-            ret.min = try std.fmt.parseInt(u4, str[0..i], 10);
-            ret.max = try std.fmt.parseInt(u4, str[i + 1 ..], 10);
-            return ret;
+            return .{
+                .range = .{
+                    .min = try std.fmt.parseInt(u4, str[0..i], 10),
+                    .max = try std.fmt.parseInt(u4, str[i + 1 ..], 10),
+                },
+            };
         }
 
-        // TODO: figure out how to return custom error
-        return error.Overflow;
+        return .{ .exact = try std.fmt.parseInt(u4, str, 10) };
     }
 
     pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
