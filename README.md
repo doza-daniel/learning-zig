@@ -1,7 +1,13 @@
 # Playing around with zig
 
-## Run the project
+## Run the "broker"
 
 ```sh
-$ zig run main.zig
+$ zig build run
+```
+
+## Run the "generator"
+
+```sh
+$ cat ./protocol_json_files/ProduceRequest.json | zig build generate
 ```
