@@ -1,7 +1,9 @@
 const std = @import("std");
 
 const json = std.json;
-const mem = std.mem;
+const Allocator = std.mem.Allocator;
+const Reader = std.Io.Reader;
+const Writer = std.Io.Writer;
 
 const Field = struct {
     type: *Ti,
@@ -21,24 +23,33 @@ const Msg = struct {
     fields: []Field,
 };
 
-pub fn handleFile(init: std.process.Init, path: []const u8) !void {
-    const file_content = try std.Io.Dir.cwd().readFileAlloc(init.io, path, init.gpa, .unlimited);
-    defer init.gpa.free(file_content);
+pub fn do(alloc: Allocator, in: *Reader, out: *Writer) !void {
+    const json_content = try readFull(alloc, in);
 
-    const clean = try clearComments(file_content, init.gpa);
-    defer init.gpa.free(clean);
+    const clean = try clearComments(json_content, alloc);
+    alloc.free(json_content);
+    defer alloc.free(clean);
 
-    const parsed = try json.parseFromSlice(Msg, init.gpa, clean, .{ .ignore_unknown_fields = true });
+    const parsed = try json.parseFromSlice(Msg, alloc, clean, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    var out_buffer: [4096]u8 = undefined;
-    var out = std.Io.File.stdout().writer(init.io, &out_buffer);
-    defer out.flush() catch |err| std.debug.print("failed to flush: {any}", .{err});
-
-    try codeGen(parsed.value, init.gpa, &out.interface);
+    try codeGen(parsed.value, alloc, out);
 }
 
-fn codeGen(T: anytype, alloc: std.mem.Allocator, out: *std.Io.Writer) !void {
+fn readFull(alloc: Allocator, in: *Reader) ![]u8 {
+    var content: std.ArrayList(u8) = .empty;
+    while (true) {
+        var buff: [1024]u8 = undefined;
+        const read = try in.readSliceShort(&buff);
+        try content.appendSlice(alloc, buff[0..read]);
+        if (read < buff.len) {
+            break;
+        }
+    }
+    return try content.toOwnedSlice(alloc);
+}
+
+fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
 
@@ -181,7 +192,7 @@ const Ti = union(enum) {
         };
     }
 
-    fn parse(str: []const u8, alloc: std.mem.Allocator) !*Ti {
+    fn parse(str: []const u8, alloc: Allocator) !*Ti {
         const result = try alloc.create(Ti);
         errdefer alloc.destroy(result);
 
@@ -233,7 +244,7 @@ const Ti = union(enum) {
         return result;
     }
 
-    pub fn jsonParse(alloc: std.mem.Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
+    pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
         return switch (try source.nextAllocMax(alloc, .alloc_always, opts.max_value_len.?)) {
             .allocated_string => |s| {
                 return (Ti.parse(s, alloc) catch unreachable).*;
@@ -242,7 +253,7 @@ const Ti = union(enum) {
         };
     }
 
-    fn deinit(self: *@This(), alloc: std.mem.Allocator) void {
+    fn deinit(self: *@This(), alloc: Allocator) void {
         defer alloc.destroy(self);
         switch (self.*) {
             .array => |arr| {
@@ -354,7 +365,7 @@ test "zig_type" {
     try std.testing.expectEqual(null, @as(Ti, .response).zigType());
 }
 
-fn clearComments(src: []const u8, alloc: mem.Allocator) ![]const u8 {
+fn clearComments(src: []const u8, alloc: Allocator) ![]const u8 {
     const dst = try alloc.alloc(u8, src.len);
 
     var pos: usize = 0;
