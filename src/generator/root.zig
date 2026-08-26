@@ -6,7 +6,7 @@ const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const Field = struct {
-    type: *Ti,
+    type: *TypeInfo,
     name: []const u8,
     versions: []const u8,
     nullableVersions: []const u8 = "",
@@ -16,7 +16,7 @@ const Field = struct {
 
 const Msg = struct {
     apiKey: i16 = 0,
-    type: *Ti,
+    type: *TypeInfo,
     name: []const u8,
     validVersions: []const u8,
     flexibleVersions: []const u8,
@@ -148,7 +148,7 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     }
 }
 
-const Ti = union(enum) {
+const TypeInfo = union(enum) {
     bool: void,
     int8: void,
     int16: void,
@@ -168,11 +168,11 @@ const Ti = union(enum) {
 
     array: struct {
         name: []const u8,
-        elements: *Ti,
+        elements: *TypeInfo,
     },
     structure: []const u8,
 
-    fn zigType(self: Ti) ?[]const u8 {
+    fn zigType(self: TypeInfo) ?[]const u8 {
         return switch (self) {
             .bool => "bool",
             .int8 => "i8",
@@ -192,11 +192,11 @@ const Ti = union(enum) {
         };
     }
 
-    fn parse(str: []const u8, alloc: Allocator) !*Ti {
-        const result = try alloc.create(Ti);
+    fn parse(str: []const u8, alloc: Allocator) !*TypeInfo {
+        const result = try alloc.create(TypeInfo);
         errdefer alloc.destroy(result);
 
-        if (std.meta.stringToEnum(std.meta.Tag(Ti), str)) |tag| {
+        if (std.meta.stringToEnum(std.meta.Tag(TypeInfo), str)) |tag| {
             switch (tag) {
                 .bool => |t| result.* = t,
                 .int8 => |t| result.* = t,
@@ -247,7 +247,7 @@ const Ti = union(enum) {
     pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
         return switch (try source.nextAllocMax(alloc, .alloc_always, opts.max_value_len.?)) {
             .allocated_string => |s| {
-                return (Ti.parse(s, alloc) catch unreachable).*;
+                return (TypeInfo.parse(s, alloc) catch unreachable).*;
             },
             else => unreachable,
         };
@@ -288,17 +288,17 @@ test "parse_primitives" {
         .{ .in = "header", .expect = .header },
     };
     inline for (table) |case| {
-        const parsed = try Ti.parse(case.in, std.testing.allocator);
+        const parsed = try TypeInfo.parse(case.in, std.testing.allocator);
         defer parsed.deinit(std.testing.allocator);
         try std.testing.expectEqual(case.expect, parsed.*);
     }
 
-    const my_array = try Ti.parse("[]MyStruct", std.testing.allocator);
+    const my_array = try TypeInfo.parse("[]MyStruct", std.testing.allocator);
     defer my_array.deinit(std.testing.allocator);
     try std.testing.expectEqualStrings("[]MyStruct", my_array.array.name);
 
-    try std.testing.expectError(error.BadPrimitive, Ti.parse("structure", std.testing.allocator));
-    try std.testing.expectError(error.BadPrimitive, Ti.parse("array", std.testing.allocator));
+    try std.testing.expectError(error.BadPrimitive, TypeInfo.parse("structure", std.testing.allocator));
+    try std.testing.expectError(error.BadPrimitive, TypeInfo.parse("array", std.testing.allocator));
 }
 
 test "parse_struct" {
@@ -310,7 +310,7 @@ test "parse_struct" {
         .{ .in = "MyStruct_", .expect_error = @as(?anyerror, error.BadStructIdent) },
     };
     inline for (table) |case| {
-        const got = Ti.parse(case.in, std.testing.allocator);
+        const got = TypeInfo.parse(case.in, std.testing.allocator);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -332,7 +332,7 @@ test "parse_array" {
         .{ .in = "[]array", .expect_error = @as(?anyerror, error.BadPrimitive) },
     };
     inline for (table) |case| {
-        const got = Ti.parse(case.in, std.testing.allocator);
+        const got = TypeInfo.parse(case.in, std.testing.allocator);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -344,25 +344,25 @@ test "parse_array" {
 }
 
 test "zig_type" {
-    try std.testing.expectEqualStrings("bool", @as(Ti, .bool).zigType().?);
-    try std.testing.expectEqualStrings("i8", @as(Ti, .int8).zigType().?);
-    try std.testing.expectEqualStrings("i16", @as(Ti, .int16).zigType().?);
-    try std.testing.expectEqualStrings("i32", @as(Ti, .int32).zigType().?);
-    try std.testing.expectEqualStrings("i64", @as(Ti, .int64).zigType().?);
-    try std.testing.expectEqualStrings("u16", @as(Ti, .uint16).zigType().?);
-    try std.testing.expectEqualStrings("u32", @as(Ti, .uint32).zigType().?);
-    try std.testing.expectEqualStrings("[16]u8", @as(Ti, .uuid).zigType().?);
-    try std.testing.expectEqualStrings("f64", @as(Ti, .float64).zigType().?);
-    try std.testing.expectEqualStrings("[]const u8", @as(Ti, .string).zigType().?);
-    try std.testing.expectEqualStrings("[]u8", @as(Ti, .bytes).zigType().?);
+    try std.testing.expectEqualStrings("bool", @as(TypeInfo, .bool).zigType().?);
+    try std.testing.expectEqualStrings("i8", @as(TypeInfo, .int8).zigType().?);
+    try std.testing.expectEqualStrings("i16", @as(TypeInfo, .int16).zigType().?);
+    try std.testing.expectEqualStrings("i32", @as(TypeInfo, .int32).zigType().?);
+    try std.testing.expectEqualStrings("i64", @as(TypeInfo, .int64).zigType().?);
+    try std.testing.expectEqualStrings("u16", @as(TypeInfo, .uint16).zigType().?);
+    try std.testing.expectEqualStrings("u32", @as(TypeInfo, .uint32).zigType().?);
+    try std.testing.expectEqualStrings("[16]u8", @as(TypeInfo, .uuid).zigType().?);
+    try std.testing.expectEqualStrings("f64", @as(TypeInfo, .float64).zigType().?);
+    try std.testing.expectEqualStrings("[]const u8", @as(TypeInfo, .string).zigType().?);
+    try std.testing.expectEqualStrings("[]u8", @as(TypeInfo, .bytes).zigType().?);
 
-    try std.testing.expectEqualStrings("[]Pera", @as(Ti, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType().?);
-    try std.testing.expectEqualStrings("MyStruct", @as(Ti, .{ .structure = "MyStruct" }).zigType().?);
+    try std.testing.expectEqualStrings("[]Pera", @as(TypeInfo, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType().?);
+    try std.testing.expectEqualStrings("MyStruct", @as(TypeInfo, .{ .structure = "MyStruct" }).zigType().?);
 
-    try std.testing.expectEqual(null, @as(Ti, .records).zigType());
-    try std.testing.expectEqual(null, @as(Ti, .header).zigType());
-    try std.testing.expectEqual(null, @as(Ti, .request).zigType());
-    try std.testing.expectEqual(null, @as(Ti, .response).zigType());
+    try std.testing.expectEqual(null, @as(TypeInfo, .records).zigType());
+    try std.testing.expectEqual(null, @as(TypeInfo, .header).zigType());
+    try std.testing.expectEqual(null, @as(TypeInfo, .request).zigType());
+    try std.testing.expectEqual(null, @as(TypeInfo, .response).zigType());
 }
 
 fn clearComments(src: []const u8, alloc: Allocator) ![]const u8 {
