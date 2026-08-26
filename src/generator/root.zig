@@ -79,8 +79,14 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     }
 
     for (T.fields) |field| {
+        // this should in theory recurse until leaf structure and find all the
+        // structs along the way, but can't be bothered
         switch (field.type.*) {
-            .array => try q.pushBack(alloc, field),
+            .structure => try q.pushBack(alloc, field),
+            .array => |arr| switch (arr.elements.*) {
+                .structure => try q.pushBack(alloc, field),
+                else => {},
+            },
             else => {},
         }
         try out.print("{s}: {s},\n", .{ field.name, field.type.zigType() orelse "{FIX ME}" });
