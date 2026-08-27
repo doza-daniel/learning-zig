@@ -49,6 +49,57 @@ fn readFull(alloc: Allocator, in: *Reader) ![]u8 {
     return try content.toOwnedSlice(alloc);
 }
 
+const formatter = struct {
+    writer: *Writer,
+
+    fn versioned(self: @This(), v: VersionInfo, comptime fmt: []const u8, args: anytype) !void {
+        const should_close = generateIf(v, self.writer) catch |err| switch (err) {
+            error.VersionNone => return,
+            else => return err,
+        };
+        try self.writer.print(fmt, args);
+        if (should_close) {
+            try self.writer.print("}}\n", .{});
+        }
+    }
+
+    fn versionedBlock(self: @This(), v: VersionInfo, field: Field, f: *const fn (*Writer, Field) anyerror!void) !void {
+        const should_close = generateIf(v, self.writer) catch |err| switch (err) {
+            error.VersionNone => return,
+            else => return err,
+        };
+        try f(self.writer, field);
+        if (should_close) {
+            try self.writer.print("}}\n", .{});
+        }
+    }
+};
+
+fn generateIf(v: VersionInfo, w: *Writer) !bool {
+    return switch (v) {
+        .none => error.VersionNone,
+        .exact => |version| {
+            try w.print("if (version == {d}) {{", .{version});
+            return true;
+        },
+        .range => |r| {
+            if (r.min == 0 and r.max == null) {
+                return false;
+            }
+            try w.print("if (", .{});
+            if (r.min > 0) {
+                try w.print("version >= {d}", .{r.min});
+            }
+            const logical_op = if (r.min > 0) " and " else "";
+            if (r.max) |max| {
+                try w.print("{s}version <= {d}", .{ logical_op, max });
+            }
+            try w.print(") {{\n", .{});
+            return true;
+        },
+    };
+}
+
 fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
@@ -61,6 +112,17 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
             try out.print("const Reader = @import(\"Reader.zig\");\n", .{});
             try out.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
             try out.print("const {s} = @This();\n", .{T.name});
+
+            try out.print("pub fn isFlexible(version: i16) bool {{", .{});
+            if (T.flexibleVersions) |flexi| switch (flexi) {
+                .none => {},
+                else => {
+                    const fmt: formatter = .{ .writer = out };
+                    try fmt.versioned(flexi, "return true;\n", .{});
+                },
+            };
+            try out.print("return false;\n", .{});
+            try out.print("}}\n", .{});
         },
         .structure => |struct_name| {
             try out.print("const {s} = struct{{\n", .{struct_name});
@@ -89,121 +151,66 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
             },
             else => {},
         }
-        try out.print("{s}: {s},\n", .{ field.name, field.type.zigType() orelse "{FIX ME}" });
+        try out.print("{s}: {s},\n", .{ field.name, field.type.zigType().? });
     }
-
-    const formatter = struct {
-        field: Field,
-        writer: *Writer,
-
-        fn versioned(self: @This(), comptime fmt: []const u8, args: anytype) !void {
-            const should_close = self.generateIf() catch |err| switch (err) {
-                error.VersionNone => return,
-                else => return err,
-            };
-            try self.writer.print(fmt, args);
-            if (should_close) {
-                try self.writer.print("}}\n", .{});
-            }
-        }
-
-        fn versionedBlock(self: @This(), f: *const fn (*Writer, Field) anyerror!void) !void {
-            const should_close = self.generateIf() catch |err| switch (err) {
-                error.VersionNone => return,
-                else => return err,
-            };
-            try f(self.writer, self.field);
-            if (should_close) {
-                try self.writer.print("}}\n", .{});
-            }
-        }
-
-        fn generateIf(self: @This()) !bool {
-            return switch (self.field.versions) {
-                .none => error.VersionNone,
-                .exact => |v| {
-                    try self.writer.print("if (version == {d}) {{", .{v});
-                    return true;
-                },
-                .range => |r| {
-                    if (r.min == 0 and r.max == null) {
-                        return false;
-                    }
-                    try self.writer.print("if (", .{});
-                    if (r.min > 0) {
-                        try self.writer.print("version >= {d}", .{r.min});
-                    }
-                    const logical_op = if (r.min > 0) " and " else "";
-                    if (r.max) |max| {
-                        try self.writer.print("{s}version <= {d}", .{ logical_op, max });
-                    }
-                    try self.writer.print(") {{\n", .{});
-                    return true;
-                },
-            };
-        }
-    };
 
     try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     for (T.fields) |field| {
-        const fmt: formatter = .{ .field = field, .writer = out };
+        const v = field.versions;
+        const fmt: formatter = .{ .writer = out };
         switch (field.type.*) {
             .bool => {
-                try fmt.versioned("self.{s} = try reader.readBool();\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readBool();\n", .{field.name});
             },
             .int8 => {
-                try fmt.versioned("self.{s} = try reader.readInt(i8);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(i8);\n", .{field.name});
             },
             .int16 => {
-                try fmt.versioned("self.{s} = try reader.readInt(i16);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(i16);\n", .{field.name});
             },
             .int32 => {
-                try fmt.versioned("self.{s} = try reader.readInt(i32);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(i32);\n", .{field.name});
             },
             .int64 => {
-                try fmt.versioned("self.{s} = try reader.readInt(i64);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(i64);\n", .{field.name});
             },
             .uint16 => {
-                try fmt.versioned("self.{s} = try reader.readInt(u16);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(u16);\n", .{field.name});
             },
             .uint32 => {
-                try fmt.versioned("self.{s} = try reader.readInt(u32);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readInt(u32);\n", .{field.name});
             },
             .uuid => {
-                try fmt.versioned("self.{s} = try reader.readUuid();\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readUuid();\n", .{field.name});
             },
             .float64 => {
-                try fmt.versioned("self.{s} = try reader.readFloat64();\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readFloat64();\n", .{field.name});
             },
             .string => {
                 // TODO: flex + nullable
-                try fmt.versioned("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readString(alloc);\n", .{field.name});
             },
             .bytes => {
                 // TODO: flex + nullable
-                try fmt.versioned("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
+                try fmt.versioned(v, "self.{s} = try reader.readBytes(alloc);\n", .{field.name});
             },
             // TODO: flex + nullable
             .array => |arr| {
-                try fmt.versioned(
-                    "self.{s} = try reader.readArray({s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().? },
-                );
+                try fmt.versioned(v, "self.{s} = try reader.readArray({s},alloc);\n", .{ field.name, arr.elements.zigType().? });
             },
             .structure => {
-                try fmt.versioned("try self.{s}.read(reader, alloc);\n", .{field.name});
+                try fmt.versioned(v, "try self.{s}.read(reader, alloc);\n", .{field.name});
             },
             .records => {
-                const anon = struct {
-                    fn block(w: *Writer, f: Field) !void {
+                try fmt.versionedBlock(v, field, struct {
+                    fn call(w: *Writer, f: Field) !void {
                         // TODO: flex + nullable
                         try w.print("var bytes = try reader.readBytes(alloc);\n", .{});
                         try w.print("defer alloc.free(bytes);\n", .{});
                         try w.print("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
                         try w.print("try self.{s}.read(&record_reader, alloc);\n", .{f.name});
                     }
-                };
-                try fmt.versionedBlock(anon.block);
+                }.call);
             },
 
             .response, .request, .data, .header => unreachable,
