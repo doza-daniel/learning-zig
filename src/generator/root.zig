@@ -1,26 +1,18 @@
 const std = @import("std");
-
 const json = std.json;
 const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
 const Field = struct {
-    type: *TypeInfo,
-    name: []const u8,
-    versions: VersionInfo,
-    nullableVersions: ?VersionInfo = null,
-    flexibleVersions: ?VersionInfo = null,
-    fields: []Field = &.{},
-};
-
-const Msg = struct {
     apiKey: i16 = 0,
     type: *TypeInfo,
     name: []const u8,
-    validVersions: VersionInfo,
+    validVersions: ?VersionInfo = null,
+    versions: ?VersionInfo = null,
     flexibleVersions: ?VersionInfo = null,
-    fields: []Field,
+    nullableVersions: ?VersionInfo = null,
+    fields: []Field = &.{},
 };
 
 pub fn do(alloc: Allocator, in: *Reader, out: *Writer) !void {
@@ -30,7 +22,7 @@ pub fn do(alloc: Allocator, in: *Reader, out: *Writer) !void {
     alloc.free(json_content);
     defer alloc.free(clean);
 
-    const parsed = try json.parseFromSlice(Msg, alloc, clean, .{ .ignore_unknown_fields = true });
+    const parsed = try json.parseFromSlice(Field, alloc, clean, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     try codeGen(parsed.value, alloc, out);
@@ -47,6 +39,55 @@ fn readFull(alloc: Allocator, in: *Reader) ![]u8 {
         }
     }
     return try content.toOwnedSlice(alloc);
+}
+
+const teraform = struct {
+    writer: *Writer,
+    field: Field,
+
+    pub fn do(self: @This(), v: VersionInfo, then: *const fn (@This()) anyerror!void, otherwise: ?*const fn (@This()) anyerror!void) !void {
+        const close = generateIf(v, self.writer) catch |err| switch (err) {
+            error.VersionNone => return,
+            else => return err,
+        };
+        try then(self);
+        if (close) {
+            try self.writer.print("}}", .{});
+            if (otherwise) |ow| {
+                try self.writer.print(" else {{\n", .{});
+                try ow(self);
+                try self.writer.print("}}", .{});
+            }
+            try self.writer.print("\n", .{});
+        }
+    }
+
+    pub fn print(self: @This(), v: VersionInfo, comptime fmt: []const u8, args: anytype) !void {
+        const anon = struct {
+            fn then(tf: teraform) !void {
+                try tf.writer.print(fmt, args);
+            }
+        };
+        try self.do(v, anon.then, null);
+    }
+};
+
+fn foobar(out: *Writer, field: Field) !void {
+    const anon = struct {
+        fn then(tf: teraform) !void {
+            try tf.writer.print("const wot: i32 = 42;", .{});
+            try tf.writer.print("std.debug.print(\"you wot mate: {{d}}\", .{{wot}});", .{});
+        }
+        fn otherwise(tf: teraform) !void {
+            try tf.writer.print("self.{s} = undefined;", .{tf.field.name});
+        }
+    };
+    var t: teraform = .{
+        .writer = out,
+        .field = field,
+    };
+    try t.do(.{ .range = .{ .min = 1, .max = 5 } }, anon.then, anon.otherwise);
+    try t.print(.{ .exact = 0 }, "const daniel: []const u8 = \"{s}\";", .{"doza"});
 }
 
 const formatter = struct {
@@ -100,27 +141,24 @@ fn generateIf(v: VersionInfo, w: *Writer) !bool {
     };
 }
 
-fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
+fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
 
     var close_struct: bool = false;
 
-    switch (T.type.*) {
+    switch (unit.type.*) {
         .request, .response, .data, .header => {
             try out.print("const std = @import(\"std\");\n", .{});
             try out.print("const Reader = @import(\"Reader.zig\");\n", .{});
             try out.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
-            try out.print("const {s} = @This();\n", .{T.name});
+            try out.print("const {s} = @This();\n", .{unit.name});
 
             try out.print("pub fn isFlexible(version: i16) bool {{", .{});
-            if (T.flexibleVersions) |flexi| switch (flexi) {
-                .none => {},
-                else => {
-                    const fmt: formatter = .{ .writer = out };
-                    try fmt.versioned(flexi, "return true;\n", .{});
-                },
-            };
+            if (unit.flexibleVersions) |flexi| {
+                const fmt: teraform = .{ .writer = out, .field = unit };
+                try fmt.print(flexi, "return true;\n", .{});
+            }
             try out.print("return false;\n", .{});
             try out.print("}}\n", .{});
         },
@@ -140,7 +178,7 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
         else => unreachable,
     }
 
-    for (T.fields) |field| {
+    for (unit.fields) |field| {
         // this should in theory recurse until leaf structure and find all the
         // structs along the way, but can't be bothered
         switch (field.type.*) {
@@ -155,8 +193,8 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
     }
 
     try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
-    for (T.fields) |field| {
-        const v = field.versions;
+    for (unit.fields) |field| {
+        const v = field.versions.?;
         const fmt: formatter = .{ .writer = out };
         switch (field.type.*) {
             .bool => {
@@ -215,6 +253,7 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
 
             .response, .request, .data, .header => unreachable,
         }
+        try foobar(out, field);
     }
     try out.print("}}\n", .{});
 
@@ -229,10 +268,10 @@ fn codeGen(T: anytype, alloc: Allocator, out: *Writer) !void {
 
 const VersionInfo = union(enum) {
     none: void,
-    exact: u4,
+    exact: i16,
     range: struct {
-        min: u4,
-        max: ?u4 = null,
+        min: i16,
+        max: ?i16 = null,
     },
 
     fn parse(str: []const u8) !VersionInfo {
@@ -243,7 +282,7 @@ const VersionInfo = union(enum) {
         if (str[str.len - 1] == '+') {
             return .{
                 .range = .{
-                    .min = try std.fmt.parseInt(u4, str[0 .. str.len - 1], 10),
+                    .min = try std.fmt.parseInt(i16, str[0 .. str.len - 1], 10),
                 },
             };
         }
@@ -251,13 +290,13 @@ const VersionInfo = union(enum) {
         if (std.ascii.findIgnoreCase(str, "-")) |i| {
             return .{
                 .range = .{
-                    .min = try std.fmt.parseInt(u4, str[0..i], 10),
-                    .max = try std.fmt.parseInt(u4, str[i + 1 ..], 10),
+                    .min = try std.fmt.parseInt(i16, str[0..i], 10),
+                    .max = try std.fmt.parseInt(i16, str[i + 1 ..], 10),
                 },
             };
         }
 
-        return .{ .exact = try std.fmt.parseInt(u4, str, 10) };
+        return .{ .exact = try std.fmt.parseInt(i16, str, 10) };
     }
 
     pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
