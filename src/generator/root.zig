@@ -42,13 +42,67 @@ fn readFull(alloc: Allocator, in: *Reader) ![]u8 {
 }
 
 const Condition = struct {
-    version: VersionInfo,
+    kind: union(enum) {
+        version: VersionInfo,
+        plain: []const u8,
+        fn writeIf(self: @This(), out: *Writer) !bool {
+            return switch (self) {
+                .plain => |str| try writeIfPlain(str, out),
+                .version => |version| try writeIfVersion(version, out),
+            };
+        }
+
+        fn writeIfPlain(str: []const u8, out: *Writer) !bool {
+            try out.print("if ({s}) {{\n", .{str});
+            return true;
+        }
+
+        fn writeIfVersion(v: VersionInfo, out: *Writer) !bool {
+            return switch (v) {
+                .none => error.VersionNone,
+                .exact => |version| {
+                    try out.print("if (version == {d}) {{\n", .{version});
+                    return true;
+                },
+                .range => |r| {
+                    if (r.min == 0 and r.max == null) {
+                        return false;
+                    }
+                    try out.print("if (", .{});
+                    if (r.min > 0) {
+                        try out.print("version >= {d}", .{r.min});
+                    }
+                    const logical_op = if (r.min > 0) " and " else "";
+                    if (r.max) |max| {
+                        try out.print("{s}version <= {d}", .{ logical_op, max });
+                    }
+                    try out.print(") {{\n", .{});
+                    return true;
+                },
+            };
+        }
+    },
+
+    flushed: bool = false,
     alloc: Allocator,
     thn: Writer.Allocating,
     oth: Writer.Allocating,
 
-    fn init(alloc: Allocator, version: VersionInfo) Condition {
-        return .{ .version = version, .alloc = alloc, .thn = .init(alloc), .oth = .init(alloc) };
+    fn init(alloc: Allocator, kind: union(enum) { str: []const u8, ver: VersionInfo }) Condition {
+        return switch (kind) {
+            .str => |s| .{
+                .kind = .{ .plain = s },
+                .alloc = alloc,
+                .thn = .init(alloc),
+                .oth = .init(alloc),
+            },
+            .ver => |v| .{
+                .kind = .{ .version = v },
+                .alloc = alloc,
+                .thn = .init(alloc),
+                .oth = .init(alloc),
+            },
+        };
     }
 
     fn then(self: *@This(), comptime fmt: []const u8, args: anytype) !void {
@@ -59,32 +113,12 @@ const Condition = struct {
         try self.oth.writer.print(fmt, args);
     }
 
-    fn writeIf(self: @This(), out: *Writer) !bool {
-        return switch (self.version) {
-            .none => error.VersionNone,
-            .exact => |version| {
-                try out.print("if (version == {d}) {{\n", .{version});
-                return true;
-            },
-            .range => |r| {
-                if (r.min == 0 and r.max == null) {
-                    return false;
-                }
-                try out.print("if (", .{});
-                if (r.min > 0) {
-                    try out.print("version >= {d}", .{r.min});
-                }
-                const logical_op = if (r.min > 0) " and " else "";
-                if (r.max) |max| {
-                    try out.print("{s}version <= {d}", .{ logical_op, max });
-                }
-                try out.print(") {{\n", .{});
-                return true;
-            },
-        };
-    }
-
     fn flush(self: *@This(), out: *Writer) !void {
+        if (self.flushed) {
+            return;
+        }
+
+        defer self.flushed = true;
         defer self.thn.deinit();
         defer self.oth.deinit();
 
@@ -92,8 +126,11 @@ const Condition = struct {
             return;
         }
 
-        const close = self.writeIf(out) catch |err| switch (err) {
-            error.VersionNone => return,
+        const close = self.kind.writeIf(out) catch |err| switch (err) {
+            error.VersionNone => {
+                try out.writeAll(self.oth.written());
+                return;
+            },
             else => return err,
         };
 
@@ -130,11 +167,11 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
             try out.print("pub fn isFlexible(version: i16) bool {{\n", .{});
             if (unit.flexibleVersions) |flexi| {
-                var ifFlexible: Condition = .init(alloc, flexi);
-                defer ifFlexible.flush(out) catch unreachable;
+                var if_flexible: Condition = .init(alloc, .{ .ver = flexi });
+                defer if_flexible.flush(out) catch unreachable;
 
-                try ifFlexible.then("return true;\n", .{});
-                try ifFlexible.otherwise("return false;\n", .{});
+                try if_flexible.then("return true;\n", .{});
+                try if_flexible.otherwise("return false;\n", .{});
             } else {
                 try out.print("return false;\n", .{});
             }
@@ -172,8 +209,16 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
     try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     for (unit.fields) |field| {
-        var fmt: Condition = .init(alloc, field.versions.?);
+        var fmt: Condition = .init(alloc, .{ .ver = field.versions.? });
         defer fmt.flush(out) catch unreachable;
+
+        var if_flexible: Condition = undefined;
+        if (field.flexibleVersions) |flexi_local_override| {
+            if_flexible = .init(alloc, .{ .ver = flexi_local_override });
+        } else {
+            if_flexible = .init(alloc, .{ .str = "isFlexible(version)" });
+        }
+        defer if_flexible.flush(&fmt.thn.writer) catch unreachable;
 
         switch (field.type.*) {
             .bool => {
@@ -203,31 +248,42 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
             .float64 => {
                 try fmt.then("self.{s} = try reader.readFloat64();\n", .{field.name});
             },
-            .string => {
-                // TODO: flex + nullable
-                try fmt.then("self.{s} = try reader.readString(alloc);\n", .{field.name});
-            },
-            .bytes => {
-                // TODO: flex + nullable
-                try fmt.then("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
-            },
-            .array => |arr| {
-                // TODO: flex + nullable
-                try fmt.then("self.{s} = try reader.readArray({s},alloc);\n", .{ field.name, arr.elements.zigType().? });
-            },
             .structure => {
                 try fmt.then("try self.{s}.read(reader, alloc);\n", .{field.name});
             },
+            .string => {
+                try if_flexible.then("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
+                try if_flexible.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
+            },
+            .bytes => {
+                try if_flexible.then("self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name});
+                try if_flexible.otherwise("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
+            },
+            .array => |arr| {
+                try if_flexible.then(
+                    "self.{s} = try reader.readCompactArray({s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().? },
+                );
+                try if_flexible.otherwise(
+                    "self.{s} = try reader.readArray({s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().? },
+                );
+            },
             .records => {
-                try fmt.then("var bytes = try reader.readBytes(alloc);\n", .{});
+                try fmt.then("var bytes: []u8 = undefined;\n", .{});
+
+                try if_flexible.then("bytes = try reader.readCompactBytes(alloc);\n", .{});
+                try if_flexible.otherwise("bytes = try reader.readCompactBytes(alloc);\n", .{});
+                try if_flexible.flush(&fmt.thn.writer);
+
                 try fmt.then("defer alloc.free(bytes);\n", .{});
+
                 try fmt.then("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
                 try fmt.then("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
             },
 
             .response, .request, .data, .header => unreachable,
         }
-        // try foobar(out, field);
     }
     try out.print("}}\n", .{});
 
