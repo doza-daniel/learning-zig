@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
-const Field = struct {
+pub const Field = struct {
     apiKey: i16 = 0,
     type: *TypeInfo,
     name: []const u8,
@@ -209,8 +209,8 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
     try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     for (unit.fields) |field| {
-        var fmt: Condition = .init(alloc, .{ .ver = field.versions.? });
-        defer fmt.flush(out) catch unreachable;
+        var if_version: Condition = .init(alloc, .{ .ver = field.versions.? });
+        defer if_version.flush(out) catch unreachable;
 
         var if_flexible: Condition = undefined;
         if (field.flexibleVersions) |flexi_local_override| {
@@ -218,42 +218,56 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
         } else {
             if_flexible = .init(alloc, .{ .str = "isFlexible(version)" });
         }
-        defer if_flexible.flush(&fmt.thn.writer) catch unreachable;
+        defer if_flexible.flush(&if_version.thn.writer) catch unreachable;
 
         switch (field.type.*) {
             .bool => {
-                try fmt.then("self.{s} = try reader.readBool();\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readBool();\n", .{field.name});
             },
             .int8 => {
-                try fmt.then("self.{s} = try reader.readInt(i8);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(i8);\n", .{field.name});
             },
             .int16 => {
-                try fmt.then("self.{s} = try reader.readInt(i16);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(i16);\n", .{field.name});
             },
             .int32 => {
-                try fmt.then("self.{s} = try reader.readInt(i32);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(i32);\n", .{field.name});
             },
             .int64 => {
-                try fmt.then("self.{s} = try reader.readInt(i64);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(i64);\n", .{field.name});
             },
             .uint16 => {
-                try fmt.then("self.{s} = try reader.readInt(u16);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(u16);\n", .{field.name});
             },
             .uint32 => {
-                try fmt.then("self.{s} = try reader.readInt(u32);\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readInt(u32);\n", .{field.name});
             },
             .uuid => {
-                try fmt.then("self.{s} = try reader.readUuid();\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readUuid();\n", .{field.name});
             },
             .float64 => {
-                try fmt.then("self.{s} = try reader.readFloat64();\n", .{field.name});
+                try if_version.then("self.{s} = try reader.readFloat64();\n", .{field.name});
             },
             .structure => {
-                try fmt.then("try self.{s}.read(reader, alloc);\n", .{field.name});
+                try if_version.then("try self.{s}.read(reader, alloc);\n", .{field.name});
             },
             .string => {
-                try if_flexible.then("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
-                try if_flexible.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                if (field.nullableVersions) |nullable_version| {
+                    var if_nullable_flexi: Condition = .init(alloc, .{ .ver = nullable_version });
+                    try if_nullable_flexi.then("self.{s} = try reader.readCompactNullableString(alloc);\n", .{field.name});
+                    try if_nullable_flexi.otherwise("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
+
+                    try if_nullable_flexi.flush(&if_flexible.thn.writer);
+
+                    var if_nullable_regular: Condition = .init(alloc, .{ .ver = nullable_version });
+                    try if_nullable_regular.then("self.{s} = try reader.readNullableString(alloc);\n", .{field.name});
+                    try if_nullable_regular.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
+
+                    try if_nullable_regular.flush(&if_flexible.oth.writer);
+                } else {
+                    try if_flexible.then("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
+                    try if_flexible.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                }
             },
             .bytes => {
                 try if_flexible.then("self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name});
@@ -270,16 +284,16 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
                 );
             },
             .records => {
-                try fmt.then("var bytes: []u8 = undefined;\n", .{});
+                try if_version.then("var bytes: []u8 = undefined;\n", .{});
 
                 try if_flexible.then("bytes = try reader.readCompactBytes(alloc);\n", .{});
                 try if_flexible.otherwise("bytes = try reader.readCompactBytes(alloc);\n", .{});
-                try if_flexible.flush(&fmt.thn.writer);
+                try if_flexible.flush(&if_version.thn.writer);
 
-                try fmt.then("defer alloc.free(bytes);\n", .{});
+                try if_version.then("defer alloc.free(bytes);\n", .{});
 
-                try fmt.then("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
-                try fmt.then("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
+                try if_version.then("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
+                try if_version.then("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
             },
 
             .response, .request, .data, .header => unreachable,
@@ -296,7 +310,7 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     }
 }
 
-const VersionInfo = union(enum) {
+pub const VersionInfo = union(enum) {
     none: void,
     exact: i16,
     range: struct {
