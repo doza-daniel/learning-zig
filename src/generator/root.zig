@@ -560,11 +560,11 @@ test "zig_type" {
     try std.testing.expectEqualStrings("f64", @as(TypeInfo, .float64).zigType().?);
     try std.testing.expectEqualStrings("[]const u8", @as(TypeInfo, .string).zigType().?);
     try std.testing.expectEqualStrings("[]u8", @as(TypeInfo, .bytes).zigType().?);
+    try std.testing.expectEqualStrings("RecordBatch", @as(TypeInfo, .records).zigType().?);
 
     try std.testing.expectEqualStrings("[]Pera", @as(TypeInfo, .{ .array = .{ .name = "[]Pera", .elements = undefined } }).zigType().?);
     try std.testing.expectEqualStrings("MyStruct", @as(TypeInfo, .{ .structure = "MyStruct" }).zigType().?);
 
-    try std.testing.expectEqual(null, @as(TypeInfo, .records).zigType());
     try std.testing.expectEqual(null, @as(TypeInfo, .header).zigType());
     try std.testing.expectEqual(null, @as(TypeInfo, .request).zigType());
     try std.testing.expectEqual(null, @as(TypeInfo, .response).zigType());
