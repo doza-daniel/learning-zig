@@ -178,229 +178,178 @@ test "if literal" {
     try std.testing.expectEqualStrings("if (cond) {\nfoo} else {\nbar}\n", out.buffered());
 }
 
-test "if version - exact" {
+test "different version setups" {
     const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .exact = 10 };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version == 10) {\nfoo} else {\nbar}\n", out.buffered());
+
+    const table = .{
+        .{
+            .version = VersionInfo.none,
+            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .expect = "bar",
+        },
+        .{
+            .version = VersionInfo.none,
+            .false_branch = null,
+            .expect = "",
+        },
+        .{
+            // only min, no else branch
+            .version = VersionInfo{ .range = .{ .min = 1 } },
+            .false_branch = null,
+            .expect = "if (version >= 1) {\nfoo}\n",
+        },
+        .{
+            // only min, always true, no else branch
+            .version = VersionInfo{ .range = .{ .min = 0 } },
+            .false_branch = null,
+            .expect = "foo",
+        },
+        .{
+            // only min, always true, else branch ignored
+            .version = VersionInfo{ .range = .{ .min = 0 } },
+            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .expect = "foo",
+        },
+        .{
+            // only min, with else branch
+            .version = VersionInfo{ .range = .{ .min = 1 } },
+            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .expect = "if (version >= 1) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // only min, no else branch
+            .version = VersionInfo{ .exact = 1 },
+            .false_branch = null,
+            .expect = "if (version == 1) {\nfoo}\n",
+        },
+        .{
+            // only min, with else branch
+            .version = VersionInfo{ .exact = 1 },
+            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .expect = "if (version == 1) {\nfoo} else {\nbar}\n",
+        },
+    };
+
+    inline for (table) |case| {
+        const expr: *Expr = try .makeIf(gpa, .{ .version = case.version }, try .makeLeaf(gpa, "foo", .{}), case.false_branch);
+        defer expr.deinit(gpa);
+        var buff: [300]u8 = undefined;
+        var out: Writer = .fixed(&buff);
+        try expr.render(.{}, &out);
+        try std.testing.expectEqualStrings(case.expect, out.buffered());
+    }
 }
 
-test "if version - exact - out of range - left" {
+test "if expression - range condition based on context" {
     const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .exact = 10 };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{ .min = 11, .max = 12 }, &out);
-    try std.testing.expectEqualStrings("bar", out.buffered());
+
+    const table = .{
+        .{
+            // full range
+            .ctx = context{},
+            .expect = "if (version >= 10 and version <= 20) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // left, outside - always false
+            .ctx = context{ .min = 30, .max = 40 },
+            .expect = "bar",
+        },
+        .{
+            // left, touching
+            .ctx = context{ .min = 20, .max = 40 },
+            .expect = "if (version <= 20) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // left, intersect
+            .ctx = context{ .min = 15, .max = 40 },
+            .expect = "if (version <= 20) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // inside, touching left
+            .ctx = context{ .min = 10, .max = 40 },
+            .expect = "if (version <= 20) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // inside, fully
+            .ctx = context{ .min = 5, .max = 40 },
+            .expect = "if (version >= 10 and version <= 20) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // inside, touching right
+            .ctx = context{ .min = 5, .max = 20 },
+            .expect = "if (version >= 10) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // right, intersect
+            .ctx = context{ .min = 5, .max = 15 },
+            .expect = "if (version >= 10) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // right, touching
+            .ctx = context{ .min = 5, .max = 10 },
+            .expect = "if (version >= 10) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // right, outside - always false
+            .ctx = context{ .min = 5, .max = 9 },
+            .expect = "bar",
+        },
+        .{
+            // containing - always true
+            .ctx = context{ .min = 11, .max = 19 },
+            .expect = "foo",
+        },
+    };
+
+    inline for (table) |case| {
+        const rng: VersionInfo = .{ .range = .{ .min = 10, .max = 20 } };
+        const expr: *Expr = try .makeIf(gpa, .{ .version = rng }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
+        defer expr.deinit(gpa);
+        var buff: [300]u8 = undefined;
+        var out: Writer = .fixed(&buff);
+        try expr.render(case.ctx, &out);
+        try std.testing.expectEqualStrings(case.expect, out.buffered());
+    }
 }
 
-test "if version - exact - out of range - right" {
+test "if expression - exact condition based on context" {
     const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .exact = 13 };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{ .min = 11, .max = 12 }, &out);
-    try std.testing.expectEqualStrings("bar", out.buffered());
-}
 
-test "if version - exact - out of range - empty" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .exact = 13 };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{ .min = 11, .max = 12 }, &out);
-    try std.testing.expectEqualStrings("", out.buffered());
-}
+    const table = .{
+        .{
+            // left, outside - always false
+            .ctx = context{ .min = 20, .max = 30 },
+            .expect = "bar",
+        },
+        .{
+            // left, border
+            .ctx = context{ .min = 15, .max = 30 },
+            .expect = "if (version == 15) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // inside
+            .ctx = context{ .min = 10, .max = 30 },
+            .expect = "if (version == 15) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // right, border
+            .ctx = context{ .min = 10, .max = 15 },
+            .expect = "if (version == 15) {\nfoo} else {\nbar}\n",
+        },
+        .{
+            // right, outside
+            .ctx = context{ .min = 5, .max = 10 },
+            .expect = "bar",
+        },
+    };
 
-test "if version - range full" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .range = .{ .min = 10, .max = 20 } };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 10 and version <= 20) {\nfoo} else {\nbar}\n", out.buffered());
-}
-
-test "if version - range only min" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .range = .{ .min = 10 } };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 10) {\nfoo} else {\nbar}\n", out.buffered());
-}
-
-test "if version - none (with else)" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .none;
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("bar", out.buffered());
-}
-
-test "if version - none (no else)" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .none;
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("", out.buffered());
-}
-
-test "if version - always true - min" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .range = .{ .min = 5 } };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{ .min = 5 }, &out);
-    try std.testing.expectEqualStrings("foo", out.buffered());
-}
-
-test "if version - always true - min and max" {
-    const gpa = std.testing.allocator;
-    const version_info: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_info }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{ .min = 5, .max = 10 }, &out);
-    try std.testing.expectEqualStrings("foo", out.buffered());
-}
-
-test "if version - nested if - range left" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 2, .max = 4 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nbar}\n", out.buffered());
-}
-
-test "if version - nested if - range left - touching" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 2, .max = 5 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version <= 5) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range left - intersect" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 2, .max = 6 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version <= 6) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range inside - touching left" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 5, .max = 7 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version <= 7) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range inside - sub" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 6, .max = 7 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version >= 6 and version <= 7) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range inside - touching right" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 6, .max = 10 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version >= 6) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range right - interset" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 6, .max = 11 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version >= 6) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range right - touching right" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 10, .max = 11 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), null);
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nif (version >= 10) {\nfoo}\n}\n", out.buffered());
-}
-
-test "if version - nested if - range right" {
-    const gpa = std.testing.allocator;
-    const version_inner: VersionInfo = .{ .range = .{ .min = 11, .max = 12 } };
-    const version_outer: VersionInfo = .{ .range = .{ .min = 5, .max = 10 } };
-    const if_inner: *Expr = try .makeIf(gpa, .{ .version = version_inner }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
-    const if_lit: *Expr = try .makeIf(gpa, .{ .version = version_outer }, if_inner, null);
-    defer if_lit.deinit(gpa);
-    var buff: [300]u8 = undefined;
-    var out: Writer = .fixed(&buff);
-    try if_lit.render(.{}, &out);
-    try std.testing.expectEqualStrings("if (version >= 5 and version <= 10) {\nbar}\n", out.buffered());
+    inline for (table) |case| {
+        const rng: VersionInfo = .{ .exact = 15 };
+        const expr: *Expr = try .makeIf(gpa, .{ .version = rng }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
+        defer expr.deinit(gpa);
+        var buff: [300]u8 = undefined;
+        var out: Writer = .fixed(&buff);
+        try expr.render(case.ctx, &out);
+        try std.testing.expectEqualStrings(case.expect, out.buffered());
+    }
 }
