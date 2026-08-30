@@ -3,46 +3,7 @@ const std = @import("std");
 const Writer = std.Io.Writer;
 const Allocator = std.mem.Allocator;
 
-const VersionInfo = @import("src/generator/root.zig").VersionInfo;
-
-pub fn main(init: std.process.Init) !void {
-    const versions: VersionInfo = .{ .range = .{ .min = 3 } };
-    const nullableVersions: VersionInfo = .{ .range = .{ .min = 5, .max = 7 } };
-    const flexibleVersions: VersionInfo = .{ .range = .{ .min = 6, .max = 8 } };
-
-    const field_name: []const u8 = "some_field";
-
-    const if_nullable: *Expr = try .makeIf(
-        init.gpa,
-        .{ .version = nullableVersions },
-        try .makeLeaf(init.gpa, "self.{s} = try reader.readNullableString();\n", .{field_name}),
-        try .makeLeaf(init.gpa, "self.{s} = try reader.readString();\n", .{field_name}),
-    );
-    const if_nullable_compact: *Expr = try .makeIf(
-        init.gpa,
-        .{ .version = nullableVersions },
-        try .makeLeaf(init.gpa, "self.{s} = try reader.readCompactNullableString();\n", .{field_name}),
-        try .makeLeaf(init.gpa, "self.{s} = try reader.readCompactString();\n", .{field_name}),
-    );
-    const if_flexi: *Expr = try .makeIf(
-        init.gpa,
-        .{ .version = flexibleVersions },
-        if_nullable_compact,
-        if_nullable,
-    );
-    const if_version: *Expr = try .makeIf(
-        init.gpa,
-        .{ .version = versions },
-        if_flexi,
-        null,
-    );
-    defer if_version.deinit(init.gpa);
-
-    var out: Writer.Allocating = .init(init.gpa);
-    defer out.deinit();
-    try if_version.render(.{}, &out.writer);
-    std.debug.print("{s}", .{out.written()});
-}
+const VersionInfo = @import("root.zig").VersionInfo;
 
 const context = struct {
     min: i16 = 0,
@@ -59,7 +20,7 @@ const context = struct {
     }
 };
 
-const Condition = union(enum) {
+pub const Condition = union(enum) {
     version: VersionInfo,
     literal: []const u8,
 
@@ -83,7 +44,6 @@ const Condition = union(enum) {
                         try out.print("version >= {d}", .{range.min});
                         err = false;
                     }
-
                     if (range.max) |max| {
                         if (max < ctx.min) {
                             return error.AlwaysFalse;
@@ -106,71 +66,90 @@ const Condition = union(enum) {
     }
 };
 
-const Expr = union(enum) {
-    If: struct {
-        Cond: Condition,
-        True: *Expr,
-        False: ?*Expr,
+const Kind = union(enum) {
+    @"if": struct {
+        cond: Condition,
+        true: *Expr,
+        false: ?*Expr,
     },
-    Leaf: []const u8,
-
-    fn makeIf(gpa: Allocator, c: Condition, t: *Expr, f: ?*Expr) !*Expr {
-        const ptr = try gpa.create(Expr);
-        ptr.* = .{ .If = .{ .Cond = c, .True = t, .False = f } };
-        return ptr;
-    }
-
-    fn makeLeaf(gpa: Allocator, comptime fmt: []const u8, args: anytype) !*Expr {
-        const ptr = try gpa.create(Expr);
-        ptr.* = .{ .Leaf = try std.fmt.allocPrint(gpa, fmt, args) };
-        return ptr;
-    }
-
-    fn render(self: @This(), ctx: context, writer: *Writer) !void {
-        switch (self) {
-            .If => |e| {
-                var buff: [1024]u8 = undefined;
-                var w: Writer = .fixed(&buff);
-                e.Cond.render(ctx, &w) catch |err| {
-                    return switch (err) {
-                        error.AlwaysTrue => try e.True.render(ctx, writer),
-                        error.AlwaysFalse => if (e.False) |f| try f.render(ctx, writer),
-                        else => err,
-                    };
-                };
-
-                const new_ctx: context = .make(e.Cond);
-
-                try writer.print("if ({s}) {{\n", .{w.buffered()});
-
-                try e.True.render(new_ctx, writer);
-                if (e.False) |f| {
-                    try writer.print("}} else {{\n", .{});
-                    try f.render(new_ctx, writer);
-                }
-                try writer.print("}}\n", .{});
-            },
-            .Leaf => |e| {
-                try writer.writeAll(e);
-            },
-        }
-    }
-
-    fn deinit(self: *@This(), gpa: Allocator) void {
-        defer gpa.destroy(self);
-        switch (self.*) {
-            .If => |e| {
-                e.True.deinit(gpa);
-                if (e.False) |f| f.deinit(gpa);
-            },
-            .Leaf => |e| gpa.free(e),
-        }
-    }
+    line: []const u8,
+    block: []const *Expr,
 };
+
+const Expr = @This();
+
+kind: Kind,
+
+pub fn If(gpa: Allocator, c: Condition, t: *Expr, f: ?*Expr) !*Expr {
+    const ptr = try gpa.create(Expr);
+    ptr.* = .{ .kind = .{ .@"if" = .{ .cond = c, .true = t, .false = f } } };
+    return ptr;
+}
+
+pub fn Line(gpa: Allocator, comptime fmt: []const u8, args: anytype) !*Expr {
+    const ptr = try gpa.create(Expr);
+    ptr.* = .{ .kind = .{ .line = try std.fmt.allocPrint(gpa, fmt, args) } };
+    return ptr;
+}
+
+pub fn Block(gpa: Allocator, list: []const *Expr) !*Expr {
+    const ptr = try gpa.create(Expr);
+    ptr.* = .{ .kind = .{ .block = list } };
+    return ptr;
+}
+
+pub fn render(self: @This(), ctx: context, writer: *Writer) !void {
+    switch (self.kind) {
+        .@"if" => |e| {
+            var buff: [1024]u8 = undefined;
+            var w: Writer = .fixed(&buff);
+            e.cond.render(ctx, &w) catch |err| {
+                return switch (err) {
+                    error.AlwaysTrue => try e.true.render(ctx, writer),
+                    error.AlwaysFalse => if (e.false) |f| try f.render(ctx, writer),
+                    else => err,
+                };
+            };
+
+            const new_ctx: context = .make(e.cond);
+
+            try writer.print("if ({s}) {{\n", .{w.buffered()});
+
+            try e.true.render(new_ctx, writer);
+            if (e.false) |f| {
+                try writer.print("}} else {{\n", .{});
+                try f.render(new_ctx, writer);
+            }
+            try writer.print("}}\n", .{});
+        },
+        .line => |e| try writer.writeAll(e),
+        .block => |e| {
+            for (e) |expr| {
+                try expr.render(ctx, writer);
+            }
+        },
+    }
+}
+
+pub fn deinit(self: *@This(), gpa: Allocator) void {
+    defer gpa.destroy(self);
+    switch (self.kind) {
+        .@"if" => |e| {
+            e.true.deinit(gpa);
+            if (e.false) |f| f.deinit(gpa);
+        },
+        .line => |e| gpa.free(e),
+        .block => |e| {
+            for (e) |expr| {
+                expr.deinit(gpa);
+            }
+        },
+    }
+}
 
 test "if literal" {
     const gpa = std.testing.allocator;
-    const if_lit: *Expr = try .makeIf(gpa, .{ .literal = "cond" }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
+    const if_lit: *Expr = try .If(gpa, .{ .literal = "cond" }, try .Line(gpa, "foo", .{}), try .Line(gpa, "bar", .{}));
     defer if_lit.deinit(gpa);
     var buff: [300]u8 = undefined;
     var out: Writer = .fixed(&buff);
@@ -184,7 +163,7 @@ test "different version setups" {
     const table = .{
         .{
             .version = VersionInfo.none,
-            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .false_branch = try Expr.Line(gpa, "bar", .{}),
             .expect = "bar",
         },
         .{
@@ -207,13 +186,13 @@ test "different version setups" {
         .{
             // only min, always true, else branch ignored
             .version = VersionInfo{ .range = .{ .min = 0 } },
-            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .false_branch = try Expr.Line(gpa, "bar", .{}),
             .expect = "foo",
         },
         .{
             // only min, with else branch
             .version = VersionInfo{ .range = .{ .min = 1 } },
-            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .false_branch = try Expr.Line(gpa, "bar", .{}),
             .expect = "if (version >= 1) {\nfoo} else {\nbar}\n",
         },
         .{
@@ -225,13 +204,13 @@ test "different version setups" {
         .{
             // only min, with else branch
             .version = VersionInfo{ .exact = 1 },
-            .false_branch = try Expr.makeLeaf(gpa, "bar", .{}),
+            .false_branch = try Expr.Line(gpa, "bar", .{}),
             .expect = "if (version == 1) {\nfoo} else {\nbar}\n",
         },
     };
 
     inline for (table) |case| {
-        const expr: *Expr = try .makeIf(gpa, .{ .version = case.version }, try .makeLeaf(gpa, "foo", .{}), case.false_branch);
+        const expr: *Expr = try .If(gpa, .{ .version = case.version }, try .Line(gpa, "foo", .{}), case.false_branch);
         defer expr.deinit(gpa);
         var buff: [300]u8 = undefined;
         var out: Writer = .fixed(&buff);
@@ -303,7 +282,7 @@ test "if expression - range condition based on context" {
 
     inline for (table) |case| {
         const rng: VersionInfo = .{ .range = .{ .min = 10, .max = 20 } };
-        const expr: *Expr = try .makeIf(gpa, .{ .version = rng }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
+        const expr: *Expr = try .If(gpa, .{ .version = rng }, try .Line(gpa, "foo", .{}), try .Line(gpa, "bar", .{}));
         defer expr.deinit(gpa);
         var buff: [300]u8 = undefined;
         var out: Writer = .fixed(&buff);
@@ -345,7 +324,7 @@ test "if expression - exact condition based on context" {
 
     inline for (table) |case| {
         const rng: VersionInfo = .{ .exact = 15 };
-        const expr: *Expr = try .makeIf(gpa, .{ .version = rng }, try .makeLeaf(gpa, "foo", .{}), try .makeLeaf(gpa, "bar", .{}));
+        const expr: *Expr = try .If(gpa, .{ .version = rng }, try .Line(gpa, "foo", .{}), try .Line(gpa, "bar", .{}));
         defer expr.deinit(gpa);
         var buff: [300]u8 = undefined;
         var out: Writer = .fixed(&buff);

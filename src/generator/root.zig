@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 
+const Expr = @import("Expr.zig");
+
 pub const Field = struct {
     apiKey: i16 = 0,
     type: *TypeInfo,
@@ -41,117 +43,6 @@ fn readFull(alloc: Allocator, in: *Reader) ![]u8 {
     return try content.toOwnedSlice(alloc);
 }
 
-const Condition = struct {
-    kind: union(enum) {
-        version: VersionInfo,
-        plain: []const u8,
-        fn writeIf(self: @This(), out: *Writer) !bool {
-            return switch (self) {
-                .plain => |str| try writeIfPlain(str, out),
-                .version => |version| try writeIfVersion(version, out),
-            };
-        }
-
-        fn writeIfPlain(str: []const u8, out: *Writer) !bool {
-            try out.print("if ({s}) {{\n", .{str});
-            return true;
-        }
-
-        fn writeIfVersion(v: VersionInfo, out: *Writer) !bool {
-            return switch (v) {
-                .none => error.VersionNone,
-                .exact => |version| {
-                    try out.print("if (version == {d}) {{\n", .{version});
-                    return true;
-                },
-                .range => |r| {
-                    if (r.min == 0 and r.max == null) {
-                        return false;
-                    }
-                    try out.print("if (", .{});
-                    if (r.min > 0) {
-                        try out.print("version >= {d}", .{r.min});
-                    }
-                    const logical_op = if (r.min > 0) " and " else "";
-                    if (r.max) |max| {
-                        try out.print("{s}version <= {d}", .{ logical_op, max });
-                    }
-                    try out.print(") {{\n", .{});
-                    return true;
-                },
-            };
-        }
-    },
-
-    flushed: bool = false,
-    alloc: Allocator,
-    thn: Writer.Allocating,
-    oth: Writer.Allocating,
-
-    fn init(alloc: Allocator, kind: union(enum) { str: []const u8, ver: VersionInfo }) Condition {
-        return switch (kind) {
-            .str => |s| .{
-                .kind = .{ .plain = s },
-                .alloc = alloc,
-                .thn = .init(alloc),
-                .oth = .init(alloc),
-            },
-            .ver => |v| .{
-                .kind = .{ .version = v },
-                .alloc = alloc,
-                .thn = .init(alloc),
-                .oth = .init(alloc),
-            },
-        };
-    }
-
-    fn then(self: *@This(), comptime fmt: []const u8, args: anytype) !void {
-        try self.thn.writer.print(fmt, args);
-    }
-
-    fn otherwise(self: *@This(), comptime fmt: []const u8, args: anytype) !void {
-        try self.oth.writer.print(fmt, args);
-    }
-
-    fn flush(self: *@This(), out: *Writer) !void {
-        if (self.flushed) {
-            return;
-        }
-
-        defer self.flushed = true;
-        defer self.thn.deinit();
-        defer self.oth.deinit();
-
-        if (self.thn.written().len == 0) {
-            return;
-        }
-
-        const close = self.kind.writeIf(out) catch |err| switch (err) {
-            error.VersionNone => {
-                try out.writeAll(self.oth.written());
-                return;
-            },
-            else => return err,
-        };
-
-        try out.writeAll(self.thn.written());
-
-        if (!close) {
-            return;
-        }
-
-        try out.print("}}", .{});
-
-        if (self.oth.written().len == 0) {
-            try out.print("\n", .{});
-            return;
-        }
-        try out.print(" else {{\n", .{});
-        try out.writeAll(self.oth.written());
-        try out.print("}}\n", .{});
-    }
-};
-
 fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     var q: std.Deque(Field) = .empty;
     defer q.deinit(alloc);
@@ -167,11 +58,14 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
             try out.print("pub fn isFlexible(version: i16) bool {{\n", .{});
             if (unit.flexibleVersions) |flexi| {
-                var if_flexible: Condition = .init(alloc, .{ .ver = flexi });
-                defer if_flexible.flush(out) catch unreachable;
-
-                try if_flexible.then("return true;\n", .{});
-                try if_flexible.otherwise("return false;\n", .{});
+                var if_flexible: *Expr = try .If(
+                    alloc,
+                    .{ .version = flexi },
+                    try .Line(alloc, "return true;\n", .{}),
+                    try .Line(alloc, "return false;\n", .{}),
+                );
+                try if_flexible.render(.{}, out);
+                if_flexible.deinit(alloc);
             } else {
                 try out.print("return false;\n", .{});
             }
@@ -209,91 +103,152 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
     try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     for (unit.fields) |field| {
-        var if_version: Condition = .init(alloc, .{ .ver = field.versions.? });
-        defer if_version.flush(out) catch unreachable;
-
-        var if_flexible: Condition = undefined;
-        if (field.flexibleVersions) |flexi_local_override| {
-            if_flexible = .init(alloc, .{ .ver = flexi_local_override });
-        } else {
-            if_flexible = .init(alloc, .{ .str = "isFlexible(version)" });
+        var expr: ?*Expr = undefined;
+        defer {
+            var if_version: *Expr = Expr.If(alloc, .{ .version = field.versions.? }, expr.?, null) catch unreachable;
+            if_version.render(.{}, out) catch unreachable;
+            if_version.deinit(alloc);
         }
-        defer if_flexible.flush(&if_version.thn.writer) catch unreachable;
+
+        var flexible_condition: Expr.Condition = .{ .literal = "isFlexible(version)" };
+        if (field.flexibleVersions) |flexi_local_override| {
+            flexible_condition = .{ .version = flexi_local_override };
+        }
 
         switch (field.type.*) {
             .bool => {
-                try if_version.then("self.{s} = try reader.readBool();\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readBool();\n", .{field.name});
             },
             .int8 => {
-                try if_version.then("self.{s} = try reader.readInt(i8);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(i8);\n", .{field.name});
             },
             .int16 => {
-                try if_version.then("self.{s} = try reader.readInt(i16);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(i16);\n", .{field.name});
             },
             .int32 => {
-                try if_version.then("self.{s} = try reader.readInt(i32);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(i32);\n", .{field.name});
             },
             .int64 => {
-                try if_version.then("self.{s} = try reader.readInt(i64);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(i64);\n", .{field.name});
             },
             .uint16 => {
-                try if_version.then("self.{s} = try reader.readInt(u16);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(u16);\n", .{field.name});
             },
             .uint32 => {
-                try if_version.then("self.{s} = try reader.readInt(u32);\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readInt(u32);\n", .{field.name});
             },
             .uuid => {
-                try if_version.then("self.{s} = try reader.readUuid();\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readUuid();\n", .{field.name});
             },
             .float64 => {
-                try if_version.then("self.{s} = try reader.readFloat64();\n", .{field.name});
+                expr = try .Line(alloc, "self.{s} = try reader.readFloat64();\n", .{field.name});
             },
             .structure => {
-                try if_version.then("try self.{s}.read(reader, alloc);\n", .{field.name});
+                expr = try .Line(alloc, "try self.{s}.read(reader, alloc);\n", .{field.name});
             },
             .string => {
                 if (field.nullableVersions) |nullable_version| {
-                    var if_nullable_flexi: Condition = .init(alloc, .{ .ver = nullable_version });
-                    try if_nullable_flexi.then("self.{s} = try reader.readCompactNullableString(alloc);\n", .{field.name});
-                    try if_nullable_flexi.otherwise("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
-
-                    try if_nullable_flexi.flush(&if_flexible.thn.writer);
-
-                    var if_nullable_regular: Condition = .init(alloc, .{ .ver = nullable_version });
-                    try if_nullable_regular.then("self.{s} = try reader.readNullableString(alloc);\n", .{field.name});
-                    try if_nullable_regular.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
-
-                    try if_nullable_regular.flush(&if_flexible.oth.writer);
+                    expr = try .If(
+                        alloc,
+                        flexible_condition,
+                        try .If(
+                            alloc,
+                            .{ .version = nullable_version },
+                            try .Line(alloc, "self.{s} = try reader.readCompactNullableString(alloc);\n", .{field.name}),
+                            try .Line(alloc, "self.{s} = try reader.readCompactString(alloc);\n", .{field.name}),
+                        ),
+                        try .If(
+                            alloc,
+                            .{ .version = nullable_version },
+                            try .Line(alloc, "self.{s} = try reader.readNullableString(alloc);\n", .{field.name}),
+                            try .Line(alloc, "self.{s} = try reader.readString(alloc);\n", .{field.name}),
+                        ),
+                    );
                 } else {
-                    try if_flexible.then("self.{s} = try reader.readCompactString(alloc);\n", .{field.name});
-                    try if_flexible.otherwise("self.{s} = try reader.readString(alloc);\n", .{field.name});
+                    expr = try .If(
+                        alloc,
+                        flexible_condition,
+                        try .Line(alloc, "self.{s} = try reader.readCompactString(alloc);\n", .{field.name}),
+                        try .Line(alloc, "self.{s} = try reader.readString(alloc);\n", .{field.name}),
+                    );
                 }
             },
             .bytes => {
-                try if_flexible.then("self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name});
-                try if_flexible.otherwise("self.{s} = try reader.readBytes(alloc);\n", .{field.name});
+                if (field.nullableVersions) |nullable_version| {
+                    expr = try .If(
+                        alloc,
+                        flexible_condition,
+                        try .If(
+                            alloc,
+                            .{ .version = nullable_version },
+                            try .Line(alloc, "self.{s} = try reader.readCompactNullableBytes(alloc);\n", .{field.name}),
+                            try .Line(alloc, "self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name}),
+                        ),
+                        try .If(
+                            alloc,
+                            .{ .version = nullable_version },
+                            try .Line(alloc, "self.{s} = try reader.readNullableBytes(alloc);\n", .{field.name}),
+                            try .Line(alloc, "self.{s} = try reader.readBytes(alloc);\n", .{field.name}),
+                        ),
+                    );
+                } else {
+                    expr = try .If(
+                        alloc,
+                        flexible_condition,
+                        try .Line(alloc, "self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name}),
+                        try .Line(alloc, "self.{s} = try reader.readBytes(alloc);\n", .{field.name}),
+                    );
+                }
             },
             .array => |arr| {
-                try if_flexible.then(
-                    "self.{s} = try reader.readCompactArray({s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().? },
-                );
-                try if_flexible.otherwise(
+                const readArray: *Expr = try .Line(
+                    alloc,
                     "self.{s} = try reader.readArray({s},alloc);\n",
                     .{ field.name, arr.elements.zigType().? },
                 );
+                const readCompactArray: *Expr = try .Line(
+                    alloc,
+                    "self.{s} = try reader.readCompactArray({s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().? },
+                );
+                if (field.nullableVersions) |nullable_version| {
+                    const readNullableArray: *Expr = try .Line(
+                        alloc,
+                        "self.{s} = try reader.readNullableArray({s},alloc);\n",
+                        .{ field.name, arr.elements.zigType().? },
+                    );
+                    const readCompactNullableArray: *Expr = try .Line(
+                        alloc,
+                        "self.{s} = try reader.readCompactNullableArray({s},alloc);\n",
+                        .{ field.name, arr.elements.zigType().? },
+                    );
+
+                    expr = try .If(
+                        alloc,
+                        flexible_condition,
+                        try .If(alloc, .{ .version = nullable_version }, readCompactNullableArray, readCompactArray),
+                        try .If(alloc, .{ .version = nullable_version }, readNullableArray, readArray),
+                    );
+                } else {
+                    expr = try .If(alloc, flexible_condition, readCompactArray, readArray);
+                }
             },
             .records => {
-                try if_version.then("var bytes: []u8 = undefined;\n", .{});
-
-                try if_flexible.then("bytes = try reader.readCompactBytes(alloc);\n", .{});
-                try if_flexible.otherwise("bytes = try reader.readCompactBytes(alloc);\n", .{});
-                try if_flexible.flush(&if_version.thn.writer);
-
-                try if_version.then("defer alloc.free(bytes);\n", .{});
-
-                try if_version.then("var record_reader: Reader = .{{.src = &bytes}};\n", .{});
-                try if_version.then("try self.{s}.read(&record_reader, alloc);\n", .{field.name});
+                expr = try .Block(
+                    alloc,
+                    &.{
+                        try .Line(alloc, "var bytes: []u8 = undefined;\n", .{}),
+                        try .If(
+                            alloc,
+                            flexible_condition,
+                            try .Line(alloc, "bytes = try reader.readCompactBytes(alloc);\n", .{}),
+                            try .Line(alloc, "bytes = try reader.readBytes(alloc);\n", .{}),
+                        ),
+                        try .Line(alloc, "defer alloc.free(bytes);\n", .{}),
+                        try .Line(alloc, "var record_reader: Reader = .{{.src = &bytes}};\n", .{}),
+                        try .Line(alloc, "try self.{s}.read(&record_reader, alloc);\n", .{field.name}),
+                    },
+                );
             },
 
             .response, .request, .data, .header => unreachable,
