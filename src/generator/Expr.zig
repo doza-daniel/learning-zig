@@ -94,7 +94,7 @@ pub fn Line(gpa: Allocator, comptime fmt: []const u8, args: anytype) !*Expr {
 
 pub fn Block(gpa: Allocator, list: []const *Expr) !*Expr {
     const ptr = try gpa.create(Expr);
-    ptr.* = .{ .kind = .{ .block = list } };
+    ptr.* = .{ .kind = .{ .block = try gpa.dupe(*Expr, list) } };
     return ptr;
 }
 
@@ -143,6 +143,7 @@ pub fn deinit(self: *@This(), gpa: Allocator) void {
             for (e) |expr| {
                 expr.deinit(gpa);
             }
+            gpa.free(e);
         },
     }
 }
