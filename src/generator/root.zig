@@ -14,7 +14,19 @@ pub const Field = struct {
     versions: ?VersionInfo = null,
     flexibleVersions: ?VersionInfo = null,
     nullableVersions: ?VersionInfo = null,
+    tag: ?u16 = null,
     fields: []Field = &.{},
+
+    fn tagCmp(_: void, a: Field, b: Field) std.math.Order {
+        return std.math.order(a.tag.?, b.tag.?);
+    }
+
+    fn usesAllocForRead(self: @This()) bool {
+        return switch (self.type.*) {
+            .records, .string, .array, .structure, .bytes => true,
+            else => false,
+        };
+    }
 };
 
 pub fn do(alloc: Allocator, in: *Reader, out: *Writer) !void {
@@ -56,7 +68,7 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
             try out.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
             try out.print("const {s} = @This();\n", .{unit.name});
 
-            try out.print("pub fn isFlexible(version: i16) bool {{\n", .{});
+            try out.print("\npub fn isFlexible(version: i16) bool {{\n", .{});
             if (unit.flexibleVersions) |flexi| {
                 var if_flexible: *Expr = try .If(
                     alloc,
@@ -98,163 +110,70 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
             },
             else => {},
         }
-        try out.print("{s}: {s},\n", .{ field.name, field.type.zigType().? });
+        const nullable = if (field.nullableVersions != null) "?" else "";
+        try out.print("{s}: {s}{s},\n", .{ field.name, nullable, field.type.zigType().? });
     }
 
-    try out.print("pub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
+    var tag_queue: std.PriorityQueue(Field, void, Field.tagCmp) = .initContext({});
+    defer tag_queue.deinit(alloc);
+
+    try out.print("\npub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
+    var alloc_unused = true;
     for (unit.fields) |field| {
-        var expr: ?*Expr = undefined;
-        defer {
-            var if_version: *Expr = Expr.If(alloc, .{ .version = field.versions.? }, expr.?, null) catch unreachable;
-            if_version.render(.{}, out) catch unreachable;
-            if_version.deinit(alloc);
+        if (field.tag != null) {
+            try tag_queue.push(alloc, field);
+            continue;
         }
-
-        var flexible_condition: Expr.Condition = .{ .literal = "isFlexible(version)" };
-        if (field.flexibleVersions) |flexi_local_override| {
-            flexible_condition = .{ .version = flexi_local_override };
-        }
-
-        switch (field.type.*) {
-            .bool => {
-                expr = try .Line(alloc, "self.{s} = try reader.readBool();\n", .{field.name});
-            },
-            .int8 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(i8);\n", .{field.name});
-            },
-            .int16 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(i16);\n", .{field.name});
-            },
-            .int32 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(i32);\n", .{field.name});
-            },
-            .int64 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(i64);\n", .{field.name});
-            },
-            .uint16 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(u16);\n", .{field.name});
-            },
-            .uint32 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readInt(u32);\n", .{field.name});
-            },
-            .uuid => {
-                expr = try .Line(alloc, "self.{s} = try reader.readUuid();\n", .{field.name});
-            },
-            .float64 => {
-                expr = try .Line(alloc, "self.{s} = try reader.readFloat64();\n", .{field.name});
-            },
-            .structure => {
-                expr = try .Line(alloc, "try self.{s}.read(reader, alloc);\n", .{field.name});
-            },
-            .string => {
-                if (field.nullableVersions) |nullable_version| {
-                    expr = try .If(
-                        alloc,
-                        flexible_condition,
-                        try .If(
-                            alloc,
-                            .{ .version = nullable_version },
-                            try .Line(alloc, "self.{s} = try reader.readCompactNullableString(alloc);\n", .{field.name}),
-                            try .Line(alloc, "self.{s} = try reader.readCompactString(alloc);\n", .{field.name}),
-                        ),
-                        try .If(
-                            alloc,
-                            .{ .version = nullable_version },
-                            try .Line(alloc, "self.{s} = try reader.readNullableString(alloc);\n", .{field.name}),
-                            try .Line(alloc, "self.{s} = try reader.readString(alloc);\n", .{field.name}),
-                        ),
-                    );
-                } else {
-                    expr = try .If(
-                        alloc,
-                        flexible_condition,
-                        try .Line(alloc, "self.{s} = try reader.readCompactString(alloc);\n", .{field.name}),
-                        try .Line(alloc, "self.{s} = try reader.readString(alloc);\n", .{field.name}),
-                    );
-                }
-            },
-            .bytes => {
-                if (field.nullableVersions) |nullable_version| {
-                    expr = try .If(
-                        alloc,
-                        flexible_condition,
-                        try .If(
-                            alloc,
-                            .{ .version = nullable_version },
-                            try .Line(alloc, "self.{s} = try reader.readCompactNullableBytes(alloc);\n", .{field.name}),
-                            try .Line(alloc, "self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name}),
-                        ),
-                        try .If(
-                            alloc,
-                            .{ .version = nullable_version },
-                            try .Line(alloc, "self.{s} = try reader.readNullableBytes(alloc);\n", .{field.name}),
-                            try .Line(alloc, "self.{s} = try reader.readBytes(alloc);\n", .{field.name}),
-                        ),
-                    );
-                } else {
-                    expr = try .If(
-                        alloc,
-                        flexible_condition,
-                        try .Line(alloc, "self.{s} = try reader.readCompactBytes(alloc);\n", .{field.name}),
-                        try .Line(alloc, "self.{s} = try reader.readBytes(alloc);\n", .{field.name}),
-                    );
-                }
-            },
-            .array => |arr| {
-                const readArray: *Expr = try .Line(
-                    alloc,
-                    "self.{s} = try reader.readArray({s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().? },
-                );
-                const readCompactArray: *Expr = try .Line(
-                    alloc,
-                    "self.{s} = try reader.readCompactArray({s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().? },
-                );
-                if (field.nullableVersions) |nullable_version| {
-                    const readNullableArray: *Expr = try .Line(
-                        alloc,
-                        "self.{s} = try reader.readNullableArray({s},alloc);\n",
-                        .{ field.name, arr.elements.zigType().? },
-                    );
-                    const readCompactNullableArray: *Expr = try .Line(
-                        alloc,
-                        "self.{s} = try reader.readCompactNullableArray({s},alloc);\n",
-                        .{ field.name, arr.elements.zigType().? },
-                    );
-
-                    expr = try .If(
-                        alloc,
-                        flexible_condition,
-                        try .If(alloc, .{ .version = nullable_version }, readCompactNullableArray, readCompactArray),
-                        try .If(alloc, .{ .version = nullable_version }, readNullableArray, readArray),
-                    );
-                } else {
-                    expr = try .If(alloc, flexible_condition, readCompactArray, readArray);
-                }
-            },
-            .records => {
-                expr = try .Block(
-                    alloc,
-                    &.{
-                        try .Line(alloc, "var bytes: []u8 = undefined;\n", .{}),
-                        try .If(
-                            alloc,
-                            flexible_condition,
-                            try .Line(alloc, "bytes = try reader.readCompactBytes(alloc);\n", .{}),
-                            try .Line(alloc, "bytes = try reader.readBytes(alloc);\n", .{}),
-                        ),
-                        try .Line(alloc, "defer alloc.free(bytes);\n", .{}),
-                        try .Line(alloc, "var record_reader: Reader = .{{.src = &bytes}};\n", .{}),
-                        try .Line(alloc, "try self.{s}.read(&record_reader, alloc);\n", .{field.name}),
-                    },
-                );
-            },
-
-            .response, .request, .data, .header => unreachable,
+        var expr = try fieldReadExpr(alloc, field, "reader");
+        try expr.render(.{}, out);
+        expr.deinit(alloc);
+        if (field.usesAllocForRead()) {
+            alloc_unused = false;
         }
     }
-    try out.print("}}\n", .{});
+
+    var expressions: std.ArrayList(*Expr) = .empty;
+    defer expressions.deinit(alloc);
+
+    try expressions.append(alloc, try .Line(alloc, "const num_tags = try reader.readUvarint();\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "for (0..num_tags) |_| {{\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "const tag: u32 = try reader.readUvarint();\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "const tag_len: u32 = try reader.readUvarint();\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "defer reader.src = reader.src[tag_len..];\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "switch (tag) {{\n", .{}));
+
+    var p: ?Field = tag_queue.pop();
+    while (p != null) : (p = tag_queue.pop()) {
+        if (p.?.usesAllocForRead()) {
+            alloc_unused = false;
+        }
+
+        try expressions.append(alloc, try .Line(alloc, "{d} => {{\n", .{p.?.tag.?}));
+        try expressions.append(alloc, try .Line(alloc, "var tag_reader: Reader = .{{ .src = reader.src[0..tag_len] }};\n", .{}));
+        try expressions.append(alloc, try fieldReadExpr(alloc, p.?, "tag_reader"));
+        try expressions.append(alloc, try .Line(alloc, "}},\n", .{}));
+    }
+    try expressions.append(alloc, try .Line(alloc, "else => unreachable,\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "}}\n", .{}));
+    try expressions.append(alloc, try .Line(alloc, "}}\n", .{}));
+
+    var read_tags: *Expr = try .If(
+        alloc,
+        .{ .literal = "isFlexible(version)" },
+        try .Block(
+            alloc,
+            expressions.items,
+        ),
+        null,
+    );
+    defer read_tags.deinit(alloc);
+    try read_tags.render(.{}, out);
+
+    if (alloc_unused) {
+        try out.print("_ = alloc;\n", .{});
+    }
+
+    try out.print("}}\n", .{}); // close read fn
 
     if (close_struct) {
         try out.print("}};\n", .{});
@@ -263,6 +182,155 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     while (q.len > 0) {
         try codeGen(q.popFront().?, alloc, out);
     }
+}
+
+fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr {
+    var expr: ?*Expr = undefined;
+    var flexible_condition: Expr.Condition = .{ .literal = "isFlexible(version)" };
+    if (field.flexibleVersions) |flexi_local_override| {
+        flexible_condition = .{ .version = flexi_local_override };
+    }
+
+    switch (field.type.*) {
+        .bool => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readBool();\n", .{ field.name, reader_var });
+        },
+        .int8 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(i8);\n", .{ field.name, reader_var });
+        },
+        .int16 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(i16);\n", .{ field.name, reader_var });
+        },
+        .int32 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(i32);\n", .{ field.name, reader_var });
+        },
+        .int64 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(i64);\n", .{ field.name, reader_var });
+        },
+        .uint16 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(u16);\n", .{ field.name, reader_var });
+        },
+        .uint32 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readInt(u32);\n", .{ field.name, reader_var });
+        },
+        .uuid => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readUuid();\n", .{ field.name, reader_var });
+        },
+        .float64 => {
+            expr = try .Line(alloc, "self.{s} = try {s}.readFloat64();\n", .{ field.name, reader_var });
+        },
+        .structure => {
+            expr = try .Line(alloc, "try self.{s}.read(reader, alloc);\n", .{field.name});
+        },
+        .string => {
+            if (field.nullableVersions) |nullable_version| {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readCompactNullableString(alloc);\n", .{ field.name, reader_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readCompactString(alloc);\n", .{ field.name, reader_var }),
+                    ),
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readNullableString(alloc);\n", .{ field.name, reader_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readString(alloc);\n", .{ field.name, reader_var }),
+                    ),
+                );
+            } else {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .Line(alloc, "self.{s} = try {s}.readCompactString(alloc);\n", .{ field.name, reader_var }),
+                    try .Line(alloc, "self.{s} = try {s}.readString(alloc);\n", .{ field.name, reader_var }),
+                );
+            }
+        },
+        .bytes => {
+            if (field.nullableVersions) |nullable_version| {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readCompactNullableBytes(alloc);\n", .{ field.name, reader_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readCompactBytes(alloc);\n", .{ field.name, reader_var }),
+                    ),
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readNullableBytes(alloc);\n", .{ field.name, reader_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readBytes(alloc);\n", .{ field.name, reader_var }),
+                    ),
+                );
+            } else {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .Line(alloc, "self.{s} = try {s}.readCompactBytes(alloc);\n", .{ field.name, reader_var }),
+                    try .Line(alloc, "self.{s} = try {s}.readBytes(alloc);\n", .{ field.name, reader_var }),
+                );
+            }
+        },
+        .array => |arr| {
+            const readArray: *Expr = try .Line(
+                alloc,
+                "self.{s} = try {s}.readArray(&{s},alloc);\n",
+                .{ field.name, arr.elements.zigType().?, reader_var },
+            );
+            const readCompactArray: *Expr = try .Line(
+                alloc,
+                "self.{s} = try {s}.readCompactArray(&{s},alloc);\n",
+                .{ field.name, arr.elements.zigType().?, reader_var },
+            );
+            if (field.nullableVersions) |nullable_version| {
+                const readNullableArray: *Expr = try .Line(
+                    alloc,
+                    "self.{s} = try {s}.readNullableArray(&{s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().?, reader_var },
+                );
+                const readCompactNullableArray: *Expr = try .Line(
+                    alloc,
+                    "self.{s} = try {s}.readCompactNullableArray(&{s},alloc);\n",
+                    .{ field.name, arr.elements.zigType().?, reader_var },
+                );
+
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .If(alloc, .{ .version = nullable_version }, readCompactNullableArray, readCompactArray),
+                    try .If(alloc, .{ .version = nullable_version }, readNullableArray, readArray),
+                );
+            } else {
+                expr = try .If(alloc, flexible_condition, readCompactArray, readArray);
+            }
+        },
+        .records => {
+            expr = try .Block(
+                alloc,
+                &.{
+                    try .Line(alloc, "var bytes: []u8 = undefined;\n", .{}),
+                    try .If(
+                        alloc,
+                        flexible_condition,
+                        try .Line(alloc, "bytes = try {s}.readCompactBytes(alloc);\n", .{reader_var}),
+                        try .Line(alloc, "bytes = try {s}.readBytes(alloc);\n", .{reader_var}),
+                    ),
+                    try .Line(alloc, "defer alloc.free(bytes);\n", .{}),
+                    try .Line(alloc, "var record_reader: Reader = .{{.src = &bytes}};\n", .{}),
+                    try .Line(alloc, "try self.{s}.read(&record_reader, alloc);\n", .{field.name}),
+                },
+            );
+        },
+
+        .response, .request, .data, .header => unreachable,
+    }
+
+    return try .If(alloc, .{ .version = field.versions.? }, expr.?, null);
 }
 
 pub const VersionInfo = union(enum) {
