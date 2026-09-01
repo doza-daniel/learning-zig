@@ -193,7 +193,7 @@ pub fn readCompactNullableBytes(self: *Reader, alloc: mem.Allocator) !?[]u8 {
     };
 }
 
-pub fn readArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
+pub fn readArray(self: *Reader, T: type, alloc: mem.Allocator, version: i16) ![]T {
     const len = try self.readInt(i32);
     if (len < 0) {
         return error.NullArray;
@@ -206,12 +206,13 @@ pub fn readArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
     errdefer alloc.free(arr);
 
     for (0..arr.len) |i| {
-        try arr[i].read(self, alloc);
+        arr[i] = .{};
+        try arr[i].read(self, alloc, version);
     }
     return arr;
 }
 
-pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
+pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator, version: i16) ![]T {
     const len = try self.readUvarint();
     if (len == 0) {
         return error.NullArray;
@@ -224,13 +225,14 @@ pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator) ![]T {
     errdefer alloc.free(arr);
 
     for (0..arr.len) |i| {
-        try arr[i].read(self, alloc);
+        arr[i] = .{};
+        try arr[i].read(self, alloc, version);
     }
     return arr;
 }
 
-pub fn readNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
-    return self.readArray(T, alloc) catch |err| {
+pub fn readNullableArray(self: *Reader, T: type, alloc: mem.Allocator, version: i16) !?[]T {
+    return self.readArray(T, alloc, version) catch |err| {
         if (err == error.NullArray) {
             return null;
         }
@@ -238,8 +240,8 @@ pub fn readNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
     };
 }
 
-pub fn readCompactNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?[]T {
-    return self.readCompactArray(T, alloc) catch |err| {
+pub fn readCompactNullableArray(self: *Reader, T: type, alloc: mem.Allocator, version: i16) !?[]T {
+    return self.readCompactArray(T, alloc, version) catch |err| {
         if (err == error.NullArray) {
             return null;
         }
@@ -247,7 +249,7 @@ pub fn readCompactNullableArray(self: *Reader, T: type, alloc: mem.Allocator) !?
     };
 }
 
-pub fn readNullableStruct(self: *Reader, T: type, alloc: mem.Allocator) !?T {
+pub fn readNullableStruct(self: *Reader, T: type, alloc: mem.Allocator, version: i16) !?T {
     const byte = try self.readInt(i8);
     if (byte == -1) {
         return null;
@@ -255,7 +257,7 @@ pub fn readNullableStruct(self: *Reader, T: type, alloc: mem.Allocator) !?T {
 
     if (byte == 1) {
         var result: T = undefined;
-        try result.read(self, alloc);
+        try result.read(self, alloc, version);
         return result;
     }
 

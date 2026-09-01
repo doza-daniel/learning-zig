@@ -111,7 +111,7 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
             else => {},
         }
         const nullable = if (field.nullableVersions != null) "?" else "";
-        try out.print("{s}: {s}{s},\n", .{ field.name, nullable, field.type.zigType().? });
+        try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.type.defaultValue().? });
     }
 
     var tag_queue: std.PriorityQueue(Field, void, Field.tagCmp) = .initContext({});
@@ -220,7 +220,7 @@ fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr 
             expr = try .Line(alloc, "self.{s} = try {s}.readFloat64();\n", .{ field.name, reader_var });
         },
         .structure => {
-            expr = try .Line(alloc, "try self.{s}.read(reader, alloc);\n", .{field.name});
+            expr = try .Line(alloc, "try self.{s}.read(&{s}, alloc, version);\n", .{ field.name, reader_var });
         },
         .string => {
             if (field.nullableVersions) |nullable_version| {
@@ -399,6 +399,18 @@ const TypeInfo = union(enum) {
         elements: *TypeInfo,
     },
     structure: []const u8,
+
+    fn defaultValue(self: TypeInfo) ?[]const u8 {
+        return switch (self) {
+            .bool => "false",
+            .int8, .int16, .int32, .int64, .uint16, .uint32, .float64 => "0",
+            .uuid => "@as([16]u8, @splat(0))",
+            .string => "\"\"",
+            .bytes, .array => "&.{}",
+            .records, .structure => ".{}",
+            else => null,
+        };
+    }
 
     fn zigType(self: TypeInfo) ?[]const u8 {
         return switch (self) {
