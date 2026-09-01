@@ -64,8 +64,8 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     switch (unit.type.*) {
         .request, .response, .data, .header => {
             try out.print("const std = @import(\"std\");\n", .{});
-            try out.print("const Reader = @import(\"Reader.zig\");\n", .{});
-            try out.print("const RecordBatch = @import(\"RecordBatch.zig\");\n", .{});
+            try out.print("const Reader = @import(\"../Reader.zig\");\n", .{});
+            try out.print("const RecordBatch = @import(\"../RecordBatch.zig\");\n", .{});
             try out.print("const {s} = @This();\n", .{unit.name});
 
             try out.print("\npub fn isFlexible(version: i16) bool {{\n", .{});
@@ -279,24 +279,24 @@ fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr 
         .array => |arr| {
             const readArray: *Expr = try .Line(
                 alloc,
-                "self.{s} = try {s}.readArray(&{s},alloc);\n",
-                .{ field.name, arr.elements.zigType().?, reader_var },
+                "self.{s} = try {s}.readArray({s}, alloc, version);\n",
+                .{ field.name, reader_var, arr.elements.zigType().? },
             );
             const readCompactArray: *Expr = try .Line(
                 alloc,
-                "self.{s} = try {s}.readCompactArray(&{s},alloc);\n",
-                .{ field.name, arr.elements.zigType().?, reader_var },
+                "self.{s} = try {s}.readCompactArray({s}, alloc, version);\n",
+                .{ field.name, reader_var, arr.elements.zigType().? },
             );
             if (field.nullableVersions) |nullable_version| {
                 const readNullableArray: *Expr = try .Line(
                     alloc,
-                    "self.{s} = try {s}.readNullableArray(&{s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().?, reader_var },
+                    "self.{s} = try {s}.readNullableArray({s}, alloc, version);\n",
+                    .{ field.name, reader_var, arr.elements.zigType().? },
                 );
                 const readCompactNullableArray: *Expr = try .Line(
                     alloc,
-                    "self.{s} = try {s}.readCompactNullableArray(&{s},alloc);\n",
-                    .{ field.name, arr.elements.zigType().?, reader_var },
+                    "self.{s} = try {s}.readCompactNullableArray({s}, alloc, version);\n",
+                    .{ field.name, reader_var, arr.elements.zigType().? },
                 );
 
                 expr = try .If(
