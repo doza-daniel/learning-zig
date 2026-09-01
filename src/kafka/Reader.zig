@@ -761,9 +761,9 @@ test "readCompactNullableBytes" {
 
 test "readArray" {
     const mock = struct {
-        foo: u16,
-        bar: u8,
-        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+        foo: u16 = 0,
+        bar: u8 = 0,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator, _: i16) !void {
             self.foo = try reader.readInt(u16);
             self.bar = try reader.readInt(u8);
         }
@@ -783,7 +783,7 @@ test "readArray" {
     inline for (table) |case| {
         var in = case.input;
         var reader: Reader = .{ .src = &in };
-        const got = reader.readArray(mock, std.testing.allocator);
+        const got = reader.readArray(mock, std.testing.allocator, 0);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -798,9 +798,9 @@ test "readArray" {
 
 test "readCompactArray" {
     const mock = struct {
-        foo: u16,
-        bar: u8,
-        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+        foo: u16 = 0,
+        bar: u8 = 0,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator, _: i16) !void {
             self.foo = try reader.readInt(u16);
             self.bar = try reader.readInt(u8);
         }
@@ -820,7 +820,7 @@ test "readCompactArray" {
     inline for (table) |case| {
         var in = case.input;
         var reader: Reader = .{ .src = &in };
-        const got = reader.readCompactArray(mock, std.testing.allocator);
+        const got = reader.readCompactArray(mock, std.testing.allocator, 0);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -835,9 +835,9 @@ test "readCompactArray" {
 
 test "readNullableArray" {
     const mock = struct {
-        foo: u16,
-        bar: u8,
-        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+        foo: u16 = 0,
+        bar: u8 = 0,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator, _: i16) !void {
             self.foo = try reader.readInt(u16);
             self.bar = try reader.readInt(u8);
         }
@@ -857,7 +857,7 @@ test "readNullableArray" {
     inline for (table) |case| {
         var in = case.input;
         var reader: Reader = .{ .src = &in };
-        const got = reader.readNullableArray(mock, std.testing.allocator);
+        const got = reader.readNullableArray(mock, std.testing.allocator, 0);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -876,9 +876,9 @@ test "readNullableArray" {
 
 test "readCompactNullableArray" {
     const mock = struct {
-        foo: u16,
-        bar: u8,
-        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+        foo: u16 = 0,
+        bar: u8 = 0,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator, _: i16) !void {
             self.foo = try reader.readInt(u16);
             self.bar = try reader.readInt(u8);
         }
@@ -898,7 +898,7 @@ test "readCompactNullableArray" {
     inline for (table) |case| {
         var in = case.input;
         var reader: Reader = .{ .src = &in };
-        const got = reader.readCompactNullableArray(mock, std.testing.allocator);
+        const got = reader.readCompactNullableArray(mock, std.testing.allocator, 0);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
@@ -917,9 +917,9 @@ test "readCompactNullableArray" {
 
 test "readNullbleStruct" {
     const mock = struct {
-        foo: u16,
-        bar: u8,
-        fn read(self: *@This(), reader: *Reader, _: mem.Allocator) !void {
+        foo: u16 = 0,
+        bar: u8 = 0,
+        fn read(self: *@This(), reader: *Reader, _: mem.Allocator, _: i16) !void {
             self.foo = try reader.readInt(u16);
             self.bar = try reader.readInt(u8);
         }
@@ -932,7 +932,7 @@ test "readNullbleStruct" {
     inline for (table) |case| {
         var in = case.input;
         var reader: Reader = .{ .src = &in };
-        const got = reader.readNullableStruct(mock, std.testing.allocator);
+        const got = reader.readNullableStruct(mock, std.testing.allocator, 0);
         if (case.expect_error) |err| {
             try std.testing.expectError(err, got);
         } else {
