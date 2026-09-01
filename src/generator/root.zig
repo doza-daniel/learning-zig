@@ -15,6 +15,7 @@ pub const Field = struct {
     flexibleVersions: ?VersionInfo = null,
     nullableVersions: ?VersionInfo = null,
     tag: ?u16 = null,
+    default: ?[]const u8 = null,
     fields: []Field = &.{},
 
     fn tagCmp(_: void, a: Field, b: Field) std.math.Order {
@@ -26,6 +27,13 @@ pub const Field = struct {
             .records, .string, .array, .structure, .bytes => true,
             else => false,
         };
+    }
+
+    fn defaultValue(self: @This()) ?[]const u8 {
+        if (self.default) |default| {
+            return default;
+        }
+        return self.type.defaultValue();
     }
 };
 
@@ -111,7 +119,7 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
             else => {},
         }
         const nullable = if (field.nullableVersions != null) "?" else "";
-        try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.type.defaultValue().? });
+        try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.defaultValue().? });
     }
 
     var tag_queue: std.PriorityQueue(Field, void, Field.tagCmp) = .initContext({});
