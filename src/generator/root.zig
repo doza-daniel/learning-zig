@@ -122,6 +122,45 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
         try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.defaultValue().? });
     }
 
+    var deinit_fn: std.ArrayList(*Expr) = .empty;
+    defer deinit_fn.deinit(alloc);
+
+    try deinit_fn.append(alloc, try .Line(alloc, "\npub fn deinit(self: @This(), alloc: std.mem.Allocator) void {{\n", .{}));
+    var unused = true;
+    for (unit.fields) |field| {
+        const initial_len = deinit_fn.items.len;
+        if (field.nullableVersions != null) {
+            const expr = try fieldDeinitExpr(alloc, "val", field.type);
+            if (expr == null) {
+                continue;
+            }
+            try deinit_fn.append(alloc, try .Line(alloc, "if (self.{s}) |val| {{\n", .{field.name}));
+            try deinit_fn.append(alloc, expr.?);
+            try deinit_fn.append(alloc, try .Line(alloc, "}}\n", .{}));
+        } else {
+            const name = try std.fmt.allocPrint(alloc, "self.{s}", .{field.name});
+            defer alloc.free(name);
+            if (try fieldDeinitExpr(alloc, name, field.type)) |expr| {
+                try deinit_fn.append(alloc, expr);
+            }
+        }
+
+        if (unused and initial_len < deinit_fn.items.len) {
+            unused = false;
+        }
+    }
+    if (unused) {
+        try deinit_fn.append(alloc, try .Line(alloc, "_ = self;", .{}));
+        try deinit_fn.append(alloc, try .Line(alloc, "_ = alloc;", .{}));
+    }
+    try deinit_fn.append(alloc, try .Line(alloc, "}}\n", .{}));
+
+    // i'm starting to hate this code, it's a ton of allocations and even reads
+    // like shit
+    var deinit_fn: *Expr = try .Block(alloc, deinit_fn.items);
+    try deinit_fn.render(.{}, out);
+    deinit_fn.deinit(alloc);
+
     var tag_queue: std.PriorityQueue(Field, void, Field.tagCmp) = .initContext({});
     defer tag_queue.deinit(alloc);
 
@@ -190,6 +229,30 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
     while (q.len > 0) {
         try codeGen(q.popFront().?, alloc, out);
     }
+}
+
+fn fieldDeinitExpr(alloc: Allocator, name: []const u8, t: *TypeInfo) !?*Expr {
+    return switch (t.*) {
+        .string, .bytes => try .Line(alloc, "alloc.free({s});\n", .{name}),
+        .structure, .records => try .Line(alloc, "{s}.deinit(alloc);\n", .{name}),
+        .array => |arr| {
+            const deinit_arr: *Expr = try .Line(alloc, "alloc.free({s});\n", .{name});
+            const deinit_elem = try fieldDeinitExpr(alloc, "elem", arr.elements);
+            if (deinit_elem == null) {
+                return deinit_arr;
+            }
+            return try .Block(
+                alloc,
+                &.{
+                    try .Line(alloc, "for ({s}) |elem| {{\n", .{name}),
+                    deinit_elem.?,
+                    try .Line(alloc, "}}\n", .{}),
+                    deinit_arr,
+                },
+            );
+        },
+        else => null,
+    };
 }
 
 fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr {
