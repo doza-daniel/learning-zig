@@ -15,7 +15,7 @@ pub const Field = struct {
     flexibleVersions: ?VersionInfo = null,
     nullableVersions: ?VersionInfo = null,
     tag: ?u16 = null,
-    default: ?[]const u8 = null,
+    default: ?DefaultValue = null,
     fields: []Field = &.{},
 
     fn tagCmp(_: void, a: Field, b: Field) std.math.Order {
@@ -31,7 +31,7 @@ pub const Field = struct {
 
     fn defaultValue(self: @This()) ?[]const u8 {
         if (self.default) |default| {
-            return default;
+            return default.str;
         }
         return self.type.defaultValue();
     }
@@ -576,6 +576,22 @@ const TypeInfo = union(enum) {
             },
             else => {},
         }
+    }
+};
+
+const DefaultValue = struct {
+    str: []const u8,
+
+    pub fn jsonParse(alloc: Allocator, source: anytype, opts: std.json.ParseOptions) !@This() {
+        return switch (try source.nextAllocMax(alloc, .alloc_always, opts.max_value_len.?)) {
+            .allocated_string => |s| {
+                return .{ .str = s };
+            },
+            .allocated_number => |num| {
+                return .{ .str = num };
+            },
+            else => unreachable,
+        };
     }
 };
 
