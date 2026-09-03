@@ -26,6 +26,7 @@ fn isFlexible(api_key: i16, api_version: i16) bool {
         0 => return api_version >= 9,
         3 => return api_version >= 9,
         18 => return api_version >= 3,
+        22 => return api_version >= 2,
         else => return false,
     }
 }

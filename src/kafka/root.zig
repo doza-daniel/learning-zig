@@ -7,13 +7,16 @@ const Reader = @import("Reader.zig");
 const Writer = @import("Writer.zig");
 const RequestHeader = @import("RequestHeader.zig");
 const ResponseHeader = @import("ResponseHeader.zig");
-const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
+// const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
+const ApiVersionsRequest = @import("generated/ApiVersionsRequest.zig");
 const ApiVersionsResponse = @import("ApiVersionsResponse.zig");
 const MetadataRequest = @import("MetadataRequest.zig");
 const MetadataResponse = @import("MetadataResponse.zig");
-const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
+//const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
+const InitProducerIdRequest = @import("generated/InitProducerIdRequest.zig");
 const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
-const ProduceRequest = @import("ProduceRequest.zig");
+//const ProduceRequest = @import("ProduceRequest.zig");
+const ProduceRequest = @import("generated/ProduceRequest.zig");
 const ProduceResponse = @import("ProduceResponse.zig");
 
 pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
@@ -50,15 +53,15 @@ fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, st
     switch (req_header.request_api_key) {
         0 => try handleProduceRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
-        18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id),
+        18 => try handleApiVersionsRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         22 => try handleInitProducerIdRequest(alloc, io, stream, reader, req_header.correlation_id, req_header.request_api_version),
         else => return error.UnknownOp,
     }
 }
 
-fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32) !void {
+fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
     var apiVersionsReq = ApiVersionsRequest{};
-    try apiVersionsReq.read(reader, alloc);
+    try apiVersionsReq.read(reader, alloc, version);
     defer apiVersionsReq.deinit(alloc);
 
     std.debug.print("{f}\n\n", .{std.json.fmt(apiVersionsReq, .{})});
@@ -170,12 +173,8 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
 }
 
 fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    var req: InitProducerIdRequest = .{
-        .version = version,
-        .transactional_id = null,
-        .transaction_timeout_ms = 0,
-    };
-    try req.read(reader, alloc);
+    var req: InitProducerIdRequest = .{};
+    try req.read(reader, alloc, version);
 
     std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
 
@@ -201,13 +200,8 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
 }
 
 fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    var req: ProduceRequest = .{
-        .version = version,
-        .acks = undefined,
-        .timeout_ms = undefined,
-        .topic_data = undefined,
-    };
-    try req.read(reader, alloc);
+    var req: ProduceRequest = .{};
+    try req.read(reader, alloc, version);
 
     std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
 
