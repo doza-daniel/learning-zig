@@ -122,42 +122,42 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
         try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.defaultValue().? });
     }
 
-    var deinit_fn: std.ArrayList(*Expr) = .empty;
-    defer deinit_fn.deinit(alloc);
+    var deinit_body: std.ArrayList(*Expr) = .empty;
+    defer deinit_body.deinit(alloc);
 
-    try deinit_fn.append(alloc, try .Line(alloc, "\npub fn deinit(self: @This(), alloc: std.mem.Allocator) void {{\n", .{}));
+    try deinit_body.append(alloc, try .Line(alloc, "\npub fn deinit(self: @This(), alloc: std.mem.Allocator) void {{\n", .{}));
     var unused = true;
     for (unit.fields) |field| {
-        const initial_len = deinit_fn.items.len;
+        const initial_len = deinit_body.items.len;
         if (field.nullableVersions != null) {
             const expr = try fieldDeinitExpr(alloc, "val", field.type);
             if (expr == null) {
                 continue;
             }
-            try deinit_fn.append(alloc, try .Line(alloc, "if (self.{s}) |val| {{\n", .{field.name}));
-            try deinit_fn.append(alloc, expr.?);
-            try deinit_fn.append(alloc, try .Line(alloc, "}}\n", .{}));
+            try deinit_body.append(alloc, try .Line(alloc, "if (self.{s}) |val| {{\n", .{field.name}));
+            try deinit_body.append(alloc, expr.?);
+            try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
         } else {
             const name = try std.fmt.allocPrint(alloc, "self.{s}", .{field.name});
             defer alloc.free(name);
             if (try fieldDeinitExpr(alloc, name, field.type)) |expr| {
-                try deinit_fn.append(alloc, expr);
+                try deinit_body.append(alloc, expr);
             }
         }
 
-        if (unused and initial_len < deinit_fn.items.len) {
+        if (unused and initial_len < deinit_body.items.len) {
             unused = false;
         }
     }
     if (unused) {
-        try deinit_fn.append(alloc, try .Line(alloc, "_ = self;", .{}));
-        try deinit_fn.append(alloc, try .Line(alloc, "_ = alloc;", .{}));
+        try deinit_body.append(alloc, try .Line(alloc, "_ = self;", .{}));
+        try deinit_body.append(alloc, try .Line(alloc, "_ = alloc;", .{}));
     }
-    try deinit_fn.append(alloc, try .Line(alloc, "}}\n", .{}));
+    try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
 
     // i'm starting to hate this code, it's a ton of allocations and even reads
     // like shit
-    var deinit_fn: *Expr = try .Block(alloc, deinit_fn.items);
+    var deinit_fn: *Expr = try .Block(alloc, deinit_body.items);
     try deinit_fn.render(.{}, out);
     deinit_fn.deinit(alloc);
 
