@@ -16,9 +16,25 @@ const MetadataResponse = @import("MetadataResponse.zig");
 //const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
 const InitProducerIdRequest = @import("generated/InitProducerIdRequest.zig");
 const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
-//const ProduceRequest = @import("ProduceRequest.zig");
+// const ProduceRequest = @import("ProduceRequest.zig");
 const ProduceRequest = @import("generated/ProduceRequest.zig");
 const ProduceResponse = @import("ProduceResponse.zig");
+
+const ApiKey = enum(i16) {
+    produce = 0,
+    metadata = 3,
+    api_versions = 18,
+    init_producer_id = 22,
+};
+
+fn isFlexible(api_key: ApiKey, api_version: i16) bool {
+    return switch (api_key) {
+        .produce => @import("generated/ProduceRequest.zig").isFlexible(api_version),
+        .metadata => @import("generated/MetadataRequest.zig").isFlexible(api_version),
+        .api_versions => @import("generated/ApiVersionsRequest.zig").isFlexible(api_version),
+        .init_producer_id => @import("generated/InitProducerIdRequest.zig").isFlexible(api_version),
+    };
+}
 
 pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     defer stream.close(io);
@@ -30,27 +46,30 @@ pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
 
     while (true) {
         const requestBody = readRawRequest(alloc, stream_reader) catch |err| {
-            std.debug.print("error happened: {any}\n\n", .{err});
+            std.log.debug("error happened: {any}", .{err});
             return;
         };
         defer alloc.free(requestBody);
 
-        std.debug.print("requestBody: {x}\n\n", .{requestBody});
-        var reader: Reader = .{ .src = requestBody };
+        std.log.debug("requestBody: {x}", .{requestBody});
 
-        var reqHeader = RequestHeader{};
-        try reqHeader.read(&reader, alloc);
-        defer reqHeader.deinit(alloc);
+        var reader: Reader = .{ .src = requestBody[0..8] };
+        const api_key: ApiKey = @enumFromInt(try reader.readInt(i16));
+        const api_version: i16 = try reader.readInt(i16);
 
-        handleRequest(alloc, io, reqHeader, stream, &reader) catch |err| {
-            std.debug.print("error while handing conn: {any}\n\n", .{err});
+        reader = .{ .src = requestBody };
+        var req_header: RequestHeader = .{};
+        try req_header.read(&reader, alloc, if (isFlexible(api_key, api_version)) 2 else 1);
+
+        handleRequest(alloc, io, req_header, stream, &reader) catch |err| {
+            std.log.debug("error while handing conn: {any}", .{err});
             return;
         };
     }
 }
 
 fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, stream: net.Stream, reader: *Reader) !void {
-    std.debug.print("{f}\n\n", .{std.json.fmt(req_header, .{})});
+    std.log.debug("req_header: {f}", .{std.json.fmt(req_header, .{})});
     switch (req_header.RequestApiKey) {
         0 => try handleProduceRequest(alloc, io, stream, reader, req_header.CorrelationId, req_header.RequestApiVersion),
         3 => try handleMetadataRequest(alloc, io, stream, reader, req_header.CorrelationId, req_header.RequestApiVersion),
@@ -65,7 +84,7 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
     try apiVersionsReq.read(reader, alloc, version);
     defer apiVersionsReq.deinit(alloc);
 
-    std.debug.print("{f}\n\n", .{std.json.fmt(apiVersionsReq, .{})});
+    std.log.debug("ApiVersionsRequest: {f}", .{std.json.fmt(apiVersionsReq, .{})});
 
     var w: Writer = .{};
     defer w.deinit(alloc);
@@ -108,7 +127,7 @@ fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, r
     try metadataReq.read(reader, alloc);
     defer metadataReq.deinit(alloc);
 
-    std.debug.print("{f}\n\n", .{std.json.fmt(metadataReq, .{})});
+    std.log.debug("MetadataRequest: {f}", .{std.json.fmt(metadataReq, .{})});
 
     const partitions = [_]MetadataResponse.MetadataResponsePartition{
         .{
@@ -177,7 +196,7 @@ fn handleInitProducerIdRequest(alloc: mem.Allocator, io: std.Io, stream: net.Str
     var req: InitProducerIdRequest = .{};
     try req.read(reader, alloc, version);
 
-    std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
+    std.log.debug("InitProducerIdRequest: {f}", .{std.json.fmt(req, .{})});
 
     var resp: InitProducerIdResponse = .{
         .throttle_time_ms = 0,
@@ -204,7 +223,7 @@ fn handleProduceRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, re
     var req: ProduceRequest = .{};
     try req.read(reader, alloc, version);
 
-    std.debug.print("{f}\n\n", .{std.json.fmt(req, .{})});
+    std.log.debug("ProduceRequest: {f}", .{std.json.fmt(req, .{})});
 
     var partition_responses = [_]ProduceResponse.PartitionProduceResponse{
         .{
