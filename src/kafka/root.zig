@@ -5,18 +5,14 @@ const net = std.Io.net;
 
 const Reader = @import("Reader.zig");
 const Writer = @import("Writer.zig");
-// const RequestHeader = @import("RequestHeader.zig");
 const RequestHeader = @import("generated/RequestHeader.zig");
 const ResponseHeader = @import("ResponseHeader.zig");
-// const ApiVersionsRequest = @import("ApiVersionsRequest.zig");
 const ApiVersionsRequest = @import("generated/ApiVersionsRequest.zig");
 const ApiVersionsResponse = @import("ApiVersionsResponse.zig");
-const MetadataRequest = @import("MetadataRequest.zig");
+const MetadataRequest = @import("generated/MetadataRequest.zig");
 const MetadataResponse = @import("MetadataResponse.zig");
-//const InitProducerIdRequest = @import("InitProducerIdRequest.zig");
 const InitProducerIdRequest = @import("generated/InitProducerIdRequest.zig");
 const InitProducerIdResponse = @import("InitProducerIdResponse.zig");
-// const ProduceRequest = @import("ProduceRequest.zig");
 const ProduceRequest = @import("generated/ProduceRequest.zig");
 const ProduceResponse = @import("ProduceResponse.zig");
 
@@ -29,10 +25,10 @@ const ApiKey = enum(i16) {
 
 fn isFlexible(api_key: ApiKey, api_version: i16) bool {
     return switch (api_key) {
-        .produce => @import("generated/ProduceRequest.zig").isFlexible(api_version),
-        .metadata => @import("generated/MetadataRequest.zig").isFlexible(api_version),
-        .api_versions => @import("generated/ApiVersionsRequest.zig").isFlexible(api_version),
-        .init_producer_id => @import("generated/InitProducerIdRequest.zig").isFlexible(api_version),
+        .produce => ProduceRequest.isFlexible(api_version),
+        .metadata => MetadataRequest.isFlexible(api_version),
+        .api_versions => ApiVersionsRequest.isFlexible(api_version),
+        .init_producer_id => InitProducerIdRequest.isFlexible(api_version),
     };
 }
 
@@ -123,8 +119,8 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
 }
 
 fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    var metadataReq = MetadataRequest{ .version = version };
-    try metadataReq.read(reader, alloc);
+    var metadataReq = MetadataRequest{};
+    try metadataReq.read(reader, alloc, version);
     defer metadataReq.deinit(alloc);
 
     std.log.debug("MetadataRequest: {f}", .{std.json.fmt(metadataReq, .{})});
