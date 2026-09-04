@@ -41,19 +41,19 @@ pub fn handler(alloc: mem.Allocator, io: std.Io, stream: net.Stream) !void {
     const stream_reader = &p.interface;
 
     while (true) {
-        const requestBody = readRawRequest(alloc, stream_reader) catch |err| {
+        const req_body = readRawRequest(alloc, stream_reader) catch |err| {
             std.log.debug("error happened: {any}", .{err});
             return;
         };
-        defer alloc.free(requestBody);
+        defer alloc.free(req_body);
 
-        std.log.debug("requestBody: {x}", .{requestBody});
+        std.log.debug("requestBody: {x}", .{req_body});
 
-        var reader: Reader = .{ .src = requestBody[0..8] };
+        var reader: Reader = .{ .src = req_body[0..8] };
         const api_key: ApiKey = @enumFromInt(try reader.readInt(i16));
         const api_version: i16 = try reader.readInt(i16);
 
-        reader = .{ .src = requestBody };
+        reader = .{ .src = req_body };
         var req_header: RequestHeader = .{};
         try req_header.read(&reader, alloc, if (isFlexible(api_key, api_version)) 2 else 1);
 
@@ -76,11 +76,11 @@ fn handleRequest(alloc: mem.Allocator, io: std.Io, req_header: RequestHeader, st
 }
 
 fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    var apiVersionsReq = ApiVersionsRequest{};
-    try apiVersionsReq.read(reader, alloc, version);
-    defer apiVersionsReq.deinit(alloc);
+    var req = ApiVersionsRequest{};
+    try req.read(reader, alloc, version);
+    defer req.deinit(alloc);
 
-    std.log.debug("ApiVersionsRequest: {f}", .{std.json.fmt(apiVersionsReq, .{})});
+    std.log.debug("ApiVersionsRequest: {f}", .{std.json.fmt(req, .{})});
 
     var w: Writer = .{};
     defer w.deinit(alloc);
@@ -119,11 +119,11 @@ fn handleApiVersionsRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream
 }
 
 fn handleMetadataRequest(alloc: mem.Allocator, io: std.Io, stream: net.Stream, reader: *Reader, correlation_id: i32, version: i16) !void {
-    var metadataReq = MetadataRequest{};
-    try metadataReq.read(reader, alloc, version);
-    defer metadataReq.deinit(alloc);
+    var req = MetadataRequest{};
+    try req.read(reader, alloc, version);
+    defer req.deinit(alloc);
 
-    std.log.debug("MetadataRequest: {f}", .{std.json.fmt(metadataReq, .{})});
+    std.log.debug("MetadataRequest: {f}", .{std.json.fmt(req, .{})});
 
     const partitions = [_]MetadataResponse.MetadataResponsePartition{
         .{
