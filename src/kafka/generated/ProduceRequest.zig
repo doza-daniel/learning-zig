@@ -104,7 +104,7 @@ const TopicProduceData = struct {
 };
 const PartitionProduceData = struct {
     Index: i32 = 0,
-    Records: ?RecordBatch = .{},
+    Records: ?RecordBatch = null,
 
     pub fn deinit(self: @This(), alloc: std.mem.Allocator) void {
         if (self.Records) |val| {
@@ -121,8 +121,10 @@ const PartitionProduceData = struct {
             bytes = try reader.readBytes(alloc);
         }
         defer alloc.free(bytes);
-        var record_reader: Reader = .{ .src = &bytes };
-        try self.Records.read(&record_reader, alloc);
+        var record_reader: Reader = .{ .src = bytes };
+        var rb: RecordBatch = undefined;
+        try rb.read(&record_reader, alloc);
+        self.Records = rb;
         if (isFlexible(version)) {
             const num_tags = try reader.readUvarint();
             for (0..num_tags) |_| {

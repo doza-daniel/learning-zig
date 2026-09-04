@@ -30,6 +30,9 @@ pub const Field = struct {
     }
 
     fn defaultValue(self: @This()) ?[]const u8 {
+        if (self.nullableVersions != null) {
+            return "null";
+        }
         if (self.default) |default| {
             return default.str;
         }
@@ -392,8 +395,10 @@ fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr 
                         try .Line(alloc, "bytes = try {s}.readBytes(alloc);\n", .{reader_var}),
                     ),
                     try .Line(alloc, "defer alloc.free(bytes);\n", .{}),
-                    try .Line(alloc, "var record_reader: Reader = .{{.src = &bytes}};\n", .{}),
-                    try .Line(alloc, "try self.{s}.read(&record_reader, alloc);\n", .{field.name}),
+                    try .Line(alloc, "var record_reader: Reader = .{{.src = bytes}};\n", .{}),
+                    try .Line(alloc, "var rb: RecordBatch = undefined;\n", .{}),
+                    try .Line(alloc, "try rb.read(&record_reader, alloc);\n", .{}),
+                    try .Line(alloc, "self.{s} = rb;\n", .{field.name}),
                 },
             );
         },
