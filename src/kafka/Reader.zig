@@ -206,8 +206,18 @@ pub fn readArray(self: *Reader, T: type, alloc: mem.Allocator, version: i16) ![]
     errdefer alloc.free(arr);
 
     for (0..arr.len) |i| {
-        arr[i] = .{};
-        try arr[i].read(self, alloc, version);
+        switch (@typeInfo(T)) {
+            .int => {
+                arr[i] = try self.readInt(T);
+            },
+            .@"struct" => {
+                try arr[i].read(self, alloc, version);
+            },
+            .pointer => {
+                arr[i] = try self.readString(alloc);
+            },
+            else => @compileError(std.fmt.comptimePrint("usupported type: {any}", .{T})),
+        }
     }
     return arr;
 }
@@ -225,8 +235,18 @@ pub fn readCompactArray(self: *Reader, T: type, alloc: mem.Allocator, version: i
     errdefer alloc.free(arr);
 
     for (0..arr.len) |i| {
-        arr[i] = .{};
-        try arr[i].read(self, alloc, version);
+        switch (@typeInfo(T)) {
+            .int => {
+                arr[i] = try self.readInt(T);
+            },
+            .@"struct" => {
+                try arr[i].read(self, alloc, version);
+            },
+            .pointer => {
+                arr[i] = try self.readString(alloc);
+            },
+            else => @compileError(std.fmt.comptimePrint("usupported type: {any}", .{T})),
+        }
     }
     return arr;
 }
@@ -796,6 +816,31 @@ test "readArray" {
     }
 }
 
+test "readArrayNonStruct" {
+    const table = .{
+        .{ .in = [_]u8{ 0x00, 0x00, 0x00, 0x02, 0x00, 0x03, 'f', 'o', 'o', 0x00, 0x03, 'b', 'a', 'r' }, .expect = [_][]const u8{ "foo", "bar" } },
+        .{ .in = [_]u8{ 0x00, 0x00, 0x00, 0x02, 0x31, 0x42, 0x71, 0x53 }, .expect = [_]i16{ 0x3142, 0x7153 } },
+    };
+    inline for (table) |case| {
+        var in = case.in;
+        var expect = case.expect;
+        var reader: Reader = .{ .src = &in };
+        const T: type = @typeInfo(@TypeOf(case.expect)).array.child;
+        const arr = try reader.readArray(T, std.testing.allocator, 0);
+
+        defer {
+            if (T == []const u8) {
+                for (arr) |str| {
+                    std.testing.allocator.free(str);
+                }
+            }
+            std.testing.allocator.free(arr);
+        }
+
+        try std.testing.expectEqualDeep(&expect, arr);
+    }
+}
+
 test "readCompactArray" {
     const mock = struct {
         foo: u16 = 0,
@@ -830,6 +875,31 @@ test "readCompactArray" {
             var expect = case.expect;
             try std.testing.expectEqualSlices(mock, &expect, arr);
         }
+    }
+}
+
+test "readCompactArrayNonStruct" {
+    const table = .{
+        .{ .in = [_]u8{ 0x03, 0x00, 0x03, 'f', 'o', 'o', 0x00, 0x03, 'b', 'a', 'r' }, .expect = [_][]const u8{ "foo", "bar" } },
+        .{ .in = [_]u8{ 0x03, 0x31, 0x42, 0x71, 0x53 }, .expect = [_]i16{ 0x3142, 0x7153 } },
+    };
+    inline for (table) |case| {
+        var in = case.in;
+        var expect = case.expect;
+        var reader: Reader = .{ .src = &in };
+        const T: type = @typeInfo(@TypeOf(case.expect)).array.child;
+        const arr = try reader.readCompactArray(T, std.testing.allocator, 0);
+
+        defer {
+            if (T == []const u8) {
+                for (arr) |str| {
+                    std.testing.allocator.free(str);
+                }
+            }
+            std.testing.allocator.free(arr);
+        }
+
+        try std.testing.expectEqualDeep(&expect, arr);
     }
 }
 
