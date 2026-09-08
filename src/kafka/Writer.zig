@@ -17,10 +17,16 @@ pub fn writeInt(self: *Writer, alloc: mem.Allocator, comptime T: type, val: T) !
 }
 
 pub fn writeVarint(self: *Writer, alloc: mem.Allocator, val: i32) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
 pub fn writeVarlong(self: *Writer, alloc: mem.Allocator, val: i64) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
@@ -42,6 +48,9 @@ pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
 }
 
 pub fn writeUvarlong(self: *Writer, alloc: mem.Allocator, val: u64) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
@@ -54,6 +63,9 @@ pub fn writeFloat64(self: *Writer, alloc: mem.Allocator, val: f64) !void {
 }
 
 pub fn writeString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
@@ -80,18 +92,30 @@ pub fn writeCompactNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]c
 }
 
 pub fn writeBytes(self: *Writer, alloc: mem.Allocator, val: []u8) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
 pub fn writeCompactBytes(self: *Writer, alloc: mem.Allocator, val: []u8) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
 pub fn writeNullableBytes(self: *Writer, alloc: mem.Allocator, val: ?[]u8) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
 pub fn writeCompactNullableBytes(self: *Writer, alloc: mem.Allocator, val: ?[]u8) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
     return error.NotImplemented;
 }
 
