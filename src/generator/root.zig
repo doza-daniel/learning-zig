@@ -125,49 +125,25 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
         try out.print("{s}: {s}{s} = {s},\n", .{ field.name, nullable, field.type.zigType().?, field.defaultValue().? });
     }
 
-    var deinit_body: std.ArrayList(*Expr) = .empty;
-    defer deinit_body.deinit(alloc);
+    try generateReadFn(alloc, unit, out);
+    try generateWriteFn(alloc, unit, out);
+    try generateDeinitFn(alloc, unit, out);
 
-    try deinit_body.append(alloc, try .Line(alloc, "\npub fn deinit(self: @This(), alloc: std.mem.Allocator) void {{\n", .{}));
-    var unused = true;
-    for (unit.fields) |field| {
-        const initial_len = deinit_body.items.len;
-        if (field.nullableVersions != null) {
-            const expr = try fieldDeinitExpr(alloc, "val", field.type);
-            if (expr == null) {
-                continue;
-            }
-            try deinit_body.append(alloc, try .Line(alloc, "if (self.{s}) |val| {{\n", .{field.name}));
-            try deinit_body.append(alloc, expr.?);
-            try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
-        } else {
-            const name = try std.fmt.allocPrint(alloc, "self.{s}", .{field.name});
-            defer alloc.free(name);
-            if (try fieldDeinitExpr(alloc, name, field.type)) |expr| {
-                try deinit_body.append(alloc, expr);
-            }
-        }
-
-        if (unused and initial_len < deinit_body.items.len) {
-            unused = false;
-        }
+    if (close_struct) {
+        try out.print("}};\n", .{});
     }
-    if (unused) {
-        try deinit_body.append(alloc, try .Line(alloc, "_ = self;", .{}));
-        try deinit_body.append(alloc, try .Line(alloc, "_ = alloc;", .{}));
-    }
-    try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
 
-    // i'm starting to hate this code, it's a ton of allocations and even reads
-    // like shit
-    var deinit_fn: *Expr = try .Block(alloc, deinit_body.items);
-    try deinit_fn.render(.{}, out);
-    deinit_fn.deinit(alloc);
+    while (q.len > 0) {
+        try codeGen(q.popFront().?, alloc, out);
+    }
+}
+
+fn generateReadFn(alloc: Allocator, unit: Field, out: *Writer) !void {
+    try out.print("\npub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
 
     var tag_queue: std.PriorityQueue(Field, void, Field.tagCmp) = .initContext({});
     defer tag_queue.deinit(alloc);
 
-    try out.print("\npub fn read(self: *@This(), reader: *Reader, alloc: std.mem.Allocator, version: i16) !void {{\n", .{});
     var alloc_unused = true;
     for (unit.fields) |field| {
         if (field.tag != null) {
@@ -225,13 +201,78 @@ fn codeGen(unit: Field, alloc: Allocator, out: *Writer) !void {
 
     try out.print("}}\n", .{}); // close read fn
 
-    if (close_struct) {
-        try out.print("}};\n", .{});
-    }
+}
 
-    while (q.len > 0) {
-        try codeGen(q.popFront().?, alloc, out);
+fn generateWriteFn(_: Allocator, _: Field, out: *Writer) !void {
+    try out.print("\npub fn write(self: @This, alloc: std.mem.Allocator, writer: *Writer, version: i16) {{\n", .{});
+    defer out.print("}}\n", .{}) catch unreachable;
+
+    // var expr: *Expr = undefined;
+
+    // for (unit.fields) |field| {
+    //     switch (field.type) {
+    //         .bool => {
+    //             expr = try .Line("try writer.writeBool(alloc, self.{s})", .{field.name});
+    //         },
+    //         .int8, .int16, .int32, .int64, .uint16, .uint32 => {
+    //             expr = try .Line("try writer.writeInt(alloc, @TypeOf(self.{s}), self.{s})", .{ field.name, field.name });
+    //         },
+    //         .uuid => {
+    //             expr = try .Line("try writer.writeUuid(alloc, self.{s})", .{field.name});
+    //         },
+    //         .float64 => {
+    //             expr = try .Line("try writer.writeFloat64(alloc, self.{s})", .{field.name});
+    //         },
+    //         .structure => {},
+    //         .string => {},
+    //         .bytes => {},
+    //         .array => |arr| {},
+    //         .records => {},
+
+    //         .response, .request, .data, .header => unreachable,
+    //     }
+    // }
+}
+
+fn generateDeinitFn(alloc: Allocator, unit: Field, out: *Writer) !void {
+    var deinit_body: std.ArrayList(*Expr) = .empty;
+    defer deinit_body.deinit(alloc);
+
+    try deinit_body.append(alloc, try .Line(alloc, "\npub fn deinit(self: @This(), alloc: std.mem.Allocator) void {{\n", .{}));
+    var unused = true;
+    for (unit.fields) |field| {
+        const initial_len = deinit_body.items.len;
+        if (field.nullableVersions != null) {
+            const expr = try fieldDeinitExpr(alloc, "val", field.type);
+            if (expr == null) {
+                continue;
+            }
+            try deinit_body.append(alloc, try .Line(alloc, "if (self.{s}) |val| {{\n", .{field.name}));
+            try deinit_body.append(alloc, expr.?);
+            try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
+        } else {
+            const name = try std.fmt.allocPrint(alloc, "self.{s}", .{field.name});
+            defer alloc.free(name);
+            if (try fieldDeinitExpr(alloc, name, field.type)) |expr| {
+                try deinit_body.append(alloc, expr);
+            }
+        }
+
+        if (unused and initial_len < deinit_body.items.len) {
+            unused = false;
+        }
     }
+    if (unused) {
+        try deinit_body.append(alloc, try .Line(alloc, "_ = self;", .{}));
+        try deinit_body.append(alloc, try .Line(alloc, "_ = alloc;", .{}));
+    }
+    try deinit_body.append(alloc, try .Line(alloc, "}}\n", .{}));
+
+    // i'm starting to hate this code, it's a ton of allocations and even reads
+    // like shit
+    var deinit_fn: *Expr = try .Block(alloc, deinit_body.items);
+    try deinit_fn.render(.{}, out);
+    deinit_fn.deinit(alloc);
 }
 
 fn fieldDeinitExpr(alloc: Allocator, name: []const u8, t: *TypeInfo) !?*Expr {
