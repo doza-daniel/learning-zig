@@ -6,10 +6,22 @@ const Writer = @This();
 
 buf: std.ArrayList(u8) = .empty,
 
+pub fn writeBool(self: *Writer, alloc: mem.Allocator, val: bool) !void {
+    try self.buf.append(alloc, if (val) 1 else 0);
+}
+
 pub fn writeInt(self: *Writer, alloc: mem.Allocator, comptime T: type, val: T) !void {
-    var buffer = [_]u8{0} ** @sizeOf(T);
+    var buffer: [@sizeOf(T)]u8 = undefined;
     mem.writeInt(T, &buffer, val, .big);
     try self.buf.appendSlice(alloc, &buffer);
+}
+
+pub fn writeVarint(self: *Writer, alloc: mem.Allocator, val: i32) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeVarlong(self: *Writer, alloc: mem.Allocator, val: i64) !void {
+    return error.NotImplemented;
 }
 
 pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
@@ -29,12 +41,25 @@ pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
     try self.buf.appendSlice(alloc, buffer[0 .. i + 1]);
 }
 
-pub fn writeBool(self: *Writer, alloc: mem.Allocator, val: bool) !void {
-    if (val) {
-        try self.buf.append(alloc, 1);
-    } else {
-        try self.buf.append(alloc, 0);
-    }
+pub fn writeUvarlong(self: *Writer, alloc: mem.Allocator, val: u64) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeUuid(self: *Writer, alloc: mem.Allocator, val: [16]u8) !void {
+    try self.buf.appendSlice(alloc, &val);
+}
+
+pub fn writeFloat64(self: *Writer, alloc: mem.Allocator, val: f64) !void {
+    try self.writeInt(alloc, u64, @bitCast(val));
+}
+
+pub fn writeString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeCompactString(self: *Writer, alloc: mem.Allocator, val: []const u8) !void {
+    try self.writeUvarint(alloc, @intCast(val.len + 1));
+    try self.buf.appendSlice(alloc, val);
 }
 
 pub fn writeNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
@@ -46,11 +71,6 @@ pub fn writeNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8
     }
 }
 
-pub fn writeCompactString(self: *Writer, alloc: mem.Allocator, val: []const u8) !void {
-    try self.writeUvarint(alloc, @intCast(val.len + 1));
-    try self.buf.appendSlice(alloc, val);
-}
-
 pub fn writeCompactNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]const u8) !void {
     if (val) |str| {
         try self.writeCompactString(alloc, str);
@@ -59,8 +79,39 @@ pub fn writeCompactNullableString(self: *Writer, alloc: mem.Allocator, val: ?[]c
     }
 }
 
-pub fn writeUuid(self: *Writer, alloc: mem.Allocator, val: [16]u8) !void {
-    try self.buf.appendSlice(alloc, &val);
+pub fn writeBytes(self: *Writer, alloc: mem.Allocator, val: []u8) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeCompactBytes(self: *Writer, alloc: mem.Allocator, val: []u8) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeNullableBytes(self: *Writer, alloc: mem.Allocator, val: ?[]u8) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeCompactNullableBytes(self: *Writer, alloc: mem.Allocator, val: ?[]u8) !void {
+    return error.NotImplemented;
+}
+
+pub fn writeArray(self: *Writer, alloc: mem.Allocator, val: []type, version: i16) !void {
+    try self.writeInt(alloc, i32, val.len);
+    for (val) |item| {
+        switch (@typeInfo(@typeInfo(val).pointer.child)) {
+            .@"struct" => {
+                try item.write(alloc, self, version);
+            },
+            else => unreachable,
+        }
+    }
+}
+
+pub fn writeCompactArray(self: *Writer, alloc: mem.Allocator, T: type, val: []T, version: i16) !void {
+    try self.writeUvarint(alloc, val.len + 1);
+    for (val) |item| {
+        try item.write(alloc, self, version);
+    }
 }
 
 pub fn deinit(self: *Writer, alloc: mem.Allocator) void {
