@@ -17,41 +17,48 @@ pub fn writeInt(self: *Writer, alloc: mem.Allocator, comptime T: type, val: T) !
 }
 
 pub fn writeVarint(self: *Writer, alloc: mem.Allocator, val: i32) !void {
-    _ = self;
-    _ = alloc;
-    _ = val;
-    return error.NotImplemented;
+    try self.writeUvarint(alloc, @as(u32, @bitCast(val << 1 ^ val >> 31)));
 }
 
 pub fn writeVarlong(self: *Writer, alloc: mem.Allocator, val: i64) !void {
-    _ = self;
-    _ = alloc;
-    _ = val;
-    return error.NotImplemented;
+    const x = @as(u64, @bitCast(val << 1 ^ val >> 63));
+    try self.writeUvarlong(alloc, x);
 }
 
 pub fn writeUvarint(self: *Writer, alloc: mem.Allocator, val: u32) !void {
+    var buf: [5]u8 = undefined;
     var tmp = val;
-    var buffer = [_]u8{0} ** (@sizeOf(u32) + 1);
-    var i: u8 = 0;
-    while (i < buffer.len) : (i += 1) {
+    comptime var i = 0;
+    inline while (i < buf.len) {
+        buf[i] = @as(u8, @truncate(tmp)) & 0x7F; // take first 7 bits
         if (i > 0) {
-            buffer[i - 1] |= 0x80; // set continuation bit
+            buf[i - 1] |= 0x80; // set continuation bit
         }
-        buffer[i] = @as(u8, @truncate(tmp)) & 0x7F; // take first 7 bits
         tmp >>= 7;
+        i += 1;
         if (tmp == 0) {
-            break;
+            try self.buf.appendSlice(alloc, buf[0..i]);
+            return;
         }
     }
-    try self.buf.appendSlice(alloc, buffer[0 .. i + 1]);
 }
 
 pub fn writeUvarlong(self: *Writer, alloc: mem.Allocator, val: u64) !void {
-    _ = self;
-    _ = alloc;
-    _ = val;
-    return error.NotImplemented;
+    var buf: [10]u8 = undefined;
+    var tmp = val;
+    comptime var i = 0;
+    inline while (i < buf.len) {
+        buf[i] = @as(u8, @truncate(tmp)) & 0x7F;
+        if (i > 0) {
+            buf[i - 1] |= 0x80;
+        }
+        tmp >>= 7;
+        i += 1;
+        if (tmp == 0) {
+            try self.buf.appendSlice(alloc, buf[0..i]);
+            return;
+        }
+    }
 }
 
 pub fn writeUuid(self: *Writer, alloc: mem.Allocator, val: [16]u8) !void {
@@ -136,6 +143,30 @@ pub fn writeCompactArray(self: *Writer, alloc: mem.Allocator, T: type, val: []T,
     for (val) |item| {
         try item.write(alloc, self, version);
     }
+}
+
+pub fn writeNullableArray(self: *Writer, alloc: mem.Allocator, val: []type, version: i16) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
+    _ = version;
+    return error.NotImplemented;
+}
+
+pub fn writeCompactNullableArray(self: *Writer, alloc: mem.Allocator, val: []type, version: i16) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
+    _ = version;
+    return error.NotImplemented;
+}
+
+pub fn writeStruct(self: *Writer, alloc: mem.Allocator, val: anytype, version: i16) !void {
+    _ = self;
+    _ = alloc;
+    _ = val;
+    _ = version;
+    return error.NotImplemented;
 }
 
 pub fn deinit(self: *Writer, alloc: mem.Allocator) void {
