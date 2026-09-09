@@ -157,19 +157,19 @@ pub fn writeCompactArray(self: *Writer, alloc: mem.Allocator, T: type, val: []co
     }
 }
 
-pub fn writeNullableArray(self: *Writer, alloc: mem.Allocator, val: ?[]type, version: i16) !void {
+pub fn writeNullableArray(self: *Writer, alloc: mem.Allocator, T: type, val: ?[]const T, version: i16) !void {
     if (val) |arr| {
-        try self.writeArray(alloc, arr, version);
+        try self.writeArray(alloc, T, arr, version);
     } else {
-        try self.writeInt(i32, -1);
+        try self.writeInt(alloc, i32, -1);
     }
 }
 
-pub fn writeCompactNullableArray(self: *Writer, alloc: mem.Allocator, val: []type, version: i16) !void {
+pub fn writeCompactNullableArray(self: *Writer, alloc: mem.Allocator, T: type, val: ?[]const T, version: i16) !void {
     if (val) |arr| {
-        try self.writeCompactArray(alloc, arr, version);
+        try self.writeCompactArray(alloc, T, arr, version);
     } else {
-        try self.writeUvarint(0);
+        try self.writeUvarint(alloc, 0);
     }
 }
 
@@ -612,6 +612,74 @@ test "writeCompactArray" {
             gpa.free(result);
         }
         try std.testing.expectEqualDeep(@as([]const case.t, &case.in), result);
+    }
+}
+
+test "writeNullableArray" {
+    const gpa = std.testing.allocator;
+
+    const mock = struct {
+        f: i32,
+        pub fn write(self: @This(), alloc: mem.Allocator, w: *Writer, _: i16) !void {
+            try w.writeInt(alloc, @TypeOf(self.f), self.f);
+        }
+
+        pub fn read(self: *@This(), r: *@import("Reader.zig"), _: mem.Allocator, _: i16) !void {
+            self.f = try r.readInt(@TypeOf(self.f));
+        }
+    };
+
+    const table = .{
+        .{ .t = mock, .in = @as(?[]const mock, null) },
+        .{ .t = mock, .in = @as(?[]const mock, &.{ .{ .f = 0x12345678 }, .{ .f = 0x77654321 } }) },
+    };
+    inline for (table) |case| {
+        var w: Writer = .{};
+        defer w.deinit(gpa);
+
+        try w.writeNullableArray(gpa, case.t, case.in, 0);
+        var r: @import("Reader.zig") = .{ .src = w.buf.items };
+        const result = try r.readNullableArray(case.t, gpa, 0);
+        if (case.in) |e| {
+            defer gpa.free(result.?);
+            try std.testing.expectEqualDeep(@as([]const case.t, e), result.?);
+        } else {
+            try std.testing.expectEqualDeep(null, result);
+        }
+    }
+}
+
+test "writeCompactNullableArray" {
+    const gpa = std.testing.allocator;
+
+    const mock = struct {
+        f: i32,
+        pub fn write(self: @This(), alloc: mem.Allocator, w: *Writer, _: i16) !void {
+            try w.writeInt(alloc, @TypeOf(self.f), self.f);
+        }
+
+        pub fn read(self: *@This(), r: *@import("Reader.zig"), _: mem.Allocator, _: i16) !void {
+            self.f = try r.readInt(@TypeOf(self.f));
+        }
+    };
+
+    const table = .{
+        .{ .t = mock, .in = @as(?[]const mock, null) },
+        .{ .t = mock, .in = @as(?[]const mock, &.{ .{ .f = 0x12345678 }, .{ .f = 0x77654321 } }) },
+    };
+    inline for (table) |case| {
+        var w: Writer = .{};
+        defer w.deinit(gpa);
+
+        try w.writeCompactNullableArray(gpa, case.t, case.in, 0);
+        var r: @import("Reader.zig") = .{ .src = w.buf.items };
+        const result = try r.readCompactNullableArray(case.t, gpa, 0);
+        if (case.in) |e| {
+            defer gpa.free(result.?);
+            try std.testing.expectEqualDeep(@as([]const case.t, e), result.?);
+        } else {
+            try std.testing.expectEqualDeep(null, result);
+        }
     }
 }
 
