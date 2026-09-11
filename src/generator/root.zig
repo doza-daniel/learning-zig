@@ -203,35 +203,11 @@ fn generateReadFn(alloc: Allocator, unit: Field, out: *Writer) !void {
 
 }
 
-fn generateWriteFn(_: Allocator, _: Field, out: *Writer) !void {
+fn generateWriteFn(alloc: Allocator, unit: Field, out: *Writer) !void {
     try out.print("\npub fn write(self: @This, alloc: std.mem.Allocator, writer: *Writer, version: i16) {{\n", .{});
     defer out.print("}}\n", .{}) catch unreachable;
-
-    // var expr: *Expr = undefined;
-
-    // for (unit.fields) |field| {
-    //     switch (field.type) {
-    //         .bool => {
-    //             expr = try .Line("try writer.writeBool(alloc, self.{s})", .{field.name});
-    //         },
-    //         .int8, .int16, .int32, .int64, .uint16, .uint32 => {
-    //             expr = try .Line("try writer.writeInt(alloc, @TypeOf(self.{s}), self.{s})", .{ field.name, field.name });
-    //         },
-    //         .uuid => {
-    //             expr = try .Line("try writer.writeUuid(alloc, self.{s})", .{field.name});
-    //         },
-    //         .float64 => {
-    //             expr = try .Line("try writer.writeFloat64(alloc, self.{s})", .{field.name});
-    //         },
-    //         .structure => {},
-    //         .string => {},
-    //         .bytes => {},
-    //         .array => |arr| {},
-    //         .records => {},
-
-    //         .response, .request, .data, .header => unreachable,
-    //     }
-    // }
+    _ = alloc;
+    _ = unit;
 }
 
 fn generateDeinitFn(alloc: Allocator, unit: Field, out: *Writer) !void {
@@ -448,6 +424,63 @@ fn fieldReadExpr(alloc: Allocator, field: Field, reader_var: []const u8) !*Expr 
     }
 
     return try .If(alloc, .{ .version = field.versions.? }, expr.?, null);
+}
+
+fn fieldWriteExpr(alloc: Allocator, field: Field, writer_var: []const u8) !*Expr {
+    var expr: ?*Expr = undefined;
+    var flexible_condition: Expr.Condition = .{ .literal = "isFlexible(version)" };
+    if (field.flexibleVersions) |flexi_local_override| {
+        flexible_condition = .{ .version = flexi_local_override };
+    }
+
+    switch (field.type) {
+        .bool => {
+            expr = try .Line("try writer.writeBool(alloc, self.{s})", .{field.name});
+        },
+        .int8, .int16, .int32, .int64, .uint16, .uint32 => {
+            expr = try .Line("try writer.writeInt(alloc, @TypeOf(self.{s}), self.{s})", .{ field.name, field.name });
+        },
+        .uuid => {
+            expr = try .Line("try writer.writeUuid(alloc, self.{s})", .{field.name});
+        },
+        .float64 => {
+            expr = try .Line("try writer.writeFloat64(alloc, self.{s})", .{field.name});
+        },
+        .structure => {
+            if (field.nullableVersions) |nullable_version| {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readCompactNullableBytes(alloc);\n", .{ field.name, writer_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readCompactBytes(alloc);\n", .{ field.name, writer_var }),
+                    ),
+                    try .If(
+                        alloc,
+                        .{ .version = nullable_version },
+                        try .Line(alloc, "self.{s} = try {s}.readNullableBytes(alloc);\n", .{ field.name, writer_var }),
+                        try .Line(alloc, "self.{s} = try {s}.readBytes(alloc);\n", .{ field.name, writer_var }),
+                    ),
+                );
+            } else {
+                expr = try .If(
+                    alloc,
+                    flexible_condition,
+                    try .Line(alloc, "self.{s} = try {s}.readCompactBytes(alloc);\n", .{ field.name, writer_var }),
+                    try .Line(alloc, "self.{s} = try {s}.readBytes(alloc);\n", .{ field.name, writer_var }),
+                );
+            }
+        },
+        // .string => {},
+        // .bytes => {},
+        // .array => |arr| {},
+        // .records => {},
+
+        .response, .request, .data, .header => unreachable,
+    }
+    return expr.?;
 }
 
 pub const VersionInfo = union(enum) {
